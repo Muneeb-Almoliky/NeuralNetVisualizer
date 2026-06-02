@@ -1,6 +1,7 @@
 // Entry point for the Neural Network Visualizer.
 
 #include "Camera.h"
+#include "Network.h"
 
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
@@ -26,8 +27,9 @@ static constexpr char kGlslVersion[] = "#version 330 core";
 // glfwSetWindowUserPointer — avoids any global mutable state.
 struct AppState
 {
-    Camera camera;
-    // Future milestones will add: NeuralNetwork network; Renderer renderer;
+    Camera        camera;
+    NeuralNetwork network;
+    // Milestone 4 will add: Renderer renderer;
 };
 
 // GLFW callbacks
@@ -137,8 +139,15 @@ int main()
     }
 
     // Application state
-    // Default camera: orbiting the origin at 45° yaw, 25° pitch, radius 8.
-    AppState state{ Camera(glm::vec3(0.0f), 45.0f, 25.0f, 8.0f) };
+    AppState state{ Camera(glm::vec3(0.0f), 45.0f, 25.0f, 14.0f) };
+
+    // Build the MLP: Input(4) → Hidden1(8) → Hidden2(6) → Output(3)
+    state.network.build({
+        { 4, "Input"    },
+        { 8, "Hidden 1" },
+        { 6, "Hidden 2" },
+        { 3, "Output"   }
+    }, /*layerSpacing=*/3.0f, /*neuronSpacing=*/1.2f);
 
     // Share state with GLFW callbacks via user pointer
     glfwSetWindowUserPointer(window, &state);
@@ -162,9 +171,19 @@ int main()
     glEnable(GL_MULTISAMPLE);
 
     // Main loop
+    double prevTime = glfwGetTime();
+
     while (!glfwWindowShouldClose(window))
     {
         glfwPollEvents();
+
+        // Delta time
+        const double now = glfwGetTime();
+        const float  dt  = static_cast<float>(now - prevTime);
+        prevTime = now;
+
+        // Advance network simulation
+        state.network.tick(dt);
 
         int fbWidth = 0, fbHeight = 0;
         glfwGetFramebufferSize(window, &fbWidth, &fbHeight);
@@ -208,18 +227,54 @@ int main()
         ImGui::Separator();
         ImGui::Spacing();
 
-        // Live camera readout
+        // Camera readout
         const glm::vec3 camPos = state.camera.getPosition();
         ImGui::Text("Camera");
         ImGui::TextDisabled("  Eye  (%.2f, %.2f, %.2f)",
                             camPos.x, camPos.y, camPos.z);
+        ImGui::Spacing();
+        ImGui::TextDisabled("LMB drag  -> orbit");
+        ImGui::TextDisabled("Scroll    -> zoom");
 
         ImGui::Spacing();
         ImGui::Separator();
+        ImGui::Spacing();
 
-        // Controls legend
-        ImGui::TextDisabled("LMB drag  -> orbit");
-        ImGui::TextDisabled("Scroll    -> zoom");
+        // Network stats
+        ImGui::Text("Network  (%d layers  |  %d neurons  |  %d synapses)",
+                    state.network.getLayerCount(),
+                    state.network.getNeuronCount(),
+                    state.network.getSynapseCount());
+        ImGui::Spacing();
+
+        const auto& layers  = state.network.getLayers();
+        const auto& neurons = state.network.getNeurons();
+
+        for (int li = 0; li < state.network.getLayerCount(); ++li)
+        {
+            const auto&    desc  = layers[li];
+            const uint32_t base  = state.network.layerStart(li);
+            const int      count = desc.neuronCount;
+
+            // Average activation for this layer
+            float avg = 0.0f;
+            for (int ni = 0; ni < count; ++ni)
+                avg += neurons[base + ni].activation;
+            avg /= static_cast<float>(count);
+
+            ImGui::TextDisabled("  %-10s  n=%d  avg=%.2f",
+                                desc.label.c_str(), count, avg);
+
+            // Activation bar
+            ImGui::SameLine();
+            const ImVec4 barCol =
+                (li == 0)                                    ? ImVec4(0.30f, 0.80f, 0.40f, 1.0f) // input  – green
+                : (li == state.network.getLayerCount() - 1) ? ImVec4(0.90f, 0.40f, 0.20f, 1.0f) // output – orange
+                :                                             ImVec4(0.45f, 0.28f, 0.90f, 1.0f); // hidden – violet
+            ImGui::PushStyleColor(ImGuiCol_PlotHistogram, barCol);
+            ImGui::ProgressBar(avg, ImVec2(-1.0f, 6.0f), "");
+            ImGui::PopStyleColor();
+        }
 
         ImGui::Spacing();
         ImGui::Separator();
