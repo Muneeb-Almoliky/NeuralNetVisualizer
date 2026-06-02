@@ -1,0 +1,17 @@
+{
+  "name": "neural-net-visualizer",
+  "version": "0.1.0",
+  "dependencies": [
+    "glad",
+    "glfw3",
+    "glm",
+    {
+      "name": "imgui",
+      "features": [
+        "glfw-binding",
+        "opengl3-binding"
+      ]
+    }
+  ],
+  "builtin-baseline": "9849e070ad4c3383890fb1c80ae0c54325e2484a"
+}
