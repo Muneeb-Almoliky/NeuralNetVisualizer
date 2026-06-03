@@ -138,3 +138,47 @@ void NeuralNetwork::tick(float dt)
         }
     }
 }
+
+// setInputs
+void NeuralNetwork::setInputs(const float* values, int count)
+{
+    if (getLayerCount() == 0) return;
+    const uint32_t base = m_layerStart[0];
+    const int      n    = m_layers[0].neuronCount;
+    for (int i = 0; i < n; ++i)
+        m_neurons[base + i].activation =
+            (i < count) ? std::clamp(values[i], 0.0f, 1.0f) : 0.0f;
+}
+
+// forwardPass
+// Deterministic weighted-sum + sigmoid propagation from layer 0 onward.
+// Inputs must already be set via setInputs() or by directly writing
+// m_neurons[layerStart(0)..].activation before this call.
+void NeuralNetwork::forwardPass()
+{
+    const int numLayers = getLayerCount();
+    for (int li = 1; li < numLayers; ++li)
+    {
+        const uint32_t dstBase  = m_layerStart[li];
+        const int      dstCount = m_layers[li].neuronCount;
+
+        // Zero accumulators
+        for (int di = 0; di < dstCount; ++di)
+            m_dstBuf[dstBase + static_cast<uint32_t>(di)] = 0.0f;
+
+        // Accumulate weighted inputs from the previous layer
+        for (const Synapse& s : m_synapses)
+        {
+            const uint32_t dstEnd = dstBase + static_cast<uint32_t>(dstCount);
+            if (s.dst >= dstBase && s.dst < dstEnd)
+                m_dstBuf[s.dst] += m_neurons[s.src].activation * s.weight;
+        }
+
+        // Apply activation function
+        for (int di = 0; di < dstCount; ++di)
+        {
+            const uint32_t idx = dstBase + static_cast<uint32_t>(di);
+            m_neurons[idx].activation = sigmoid(m_dstBuf[idx]);
+        }
+    }
+}

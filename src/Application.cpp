@@ -60,11 +60,29 @@ int Application::run()
     return EXIT_SUCCESS;
 }
 
-// update — advance simulation state
+// update — advance simulation, handle UI commands
 void Application::update(float dt)
 {
-    // Animation speed comes from the ImGui slider inside Renderer::params
-    m_network.tick(dt * m_renderer.params.animSpeed);
+    auto& cfg = m_renderer.netConfig;
+
+    // Architecture rebuild requested from the UI
+    if (cfg.rebuildPending)
+    {
+        cfg.rebuildPending = false;
+        rebuildNetwork();
+    }
+
+    // Inference mode: user-driven forward pass; Animation mode: sin-wave tick
+    if (cfg.inferenceMode)
+    {
+        m_network.setInputs(cfg.inputValues,
+                            m_network.getLayers()[0].neuronCount);
+        m_network.forwardPass();
+    }
+    else
+    {
+        m_network.tick(dt * m_renderer.params.animSpeed);
+    }
 }
 
 // render — clear → 3D scene → ImGui overlay → done
@@ -188,7 +206,7 @@ bool Application::initImGui()
 // initScene
 bool Application::initScene()
 {
-    // Build the MLP: Input(4) → Hidden1(8) → Hidden2(6) → Output(3)
+    // Build the initial MLP: Input(4) → Hidden1(8) → Hidden2(6) → Output(3)
     m_network.build(
     {
         { 4, "Input"    },
@@ -199,6 +217,14 @@ bool Application::initScene()
     /*layerSpacing=*/  3.0f,
     /*neuronSpacing=*/ 1.2f);
 
+    // Sync the UI config to match what was just built
+    auto& cfg = m_renderer.netConfig;
+    cfg.layerCount    = 4;
+    cfg.layerSizes[0] = 4;
+    cfg.layerSizes[1] = 8;
+    cfg.layerSizes[2] = 6;
+    cfg.layerSizes[3] = 3;
+
     if (!m_renderer.init())
     {
         std::fprintf(stderr, "Renderer::init() failed.\n");
@@ -206,6 +232,29 @@ bool Application::initScene()
     }
 
     return true;
+}
+
+// rebuildNetwork
+// Converts the current netConfig into a LayerDesc list and calls build().
+// Invoked by update() whenever cfg.rebuildPending is true.
+void Application::rebuildNetwork()
+{
+    const auto& cfg = m_renderer.netConfig;
+
+    std::vector<NeuralNetwork::LayerDesc> layers;
+    layers.reserve(cfg.layerCount);
+
+    for (int i = 0; i < cfg.layerCount; ++i)
+    {
+        std::string label;
+        if      (i == 0)                  label = "Input";
+        else if (i == cfg.layerCount - 1) label = "Output";
+        else                              label = "Hidden " + std::to_string(i);
+
+        layers.push_back({ cfg.layerSizes[i], std::move(label) });
+    }
+
+    m_network.build(layers, 3.0f, 1.2f);
 }
 
 // GLFW static callback trampolines

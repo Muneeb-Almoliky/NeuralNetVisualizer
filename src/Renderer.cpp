@@ -433,8 +433,7 @@ void Renderer::drawImGui(const NeuralNetwork& net, const Camera& cam)
     ImGui::Spacing();
 
     // Render Settings
-    if (ImGui::CollapsingHeader("Render Settings",
-                                ImGuiTreeNodeFlags_DefaultOpen))
+    if (ImGui::CollapsingHeader("Render Settings"))
     {
         ImGui::SliderFloat("Neuron Radius",  &params.neuronRadius, 0.10f, 0.70f, "%.2f");
         ImGui::SliderFloat("Glow Strength",  &params.glowStrength, 0.00f, 6.00f, "%.2f");
@@ -444,6 +443,145 @@ void Renderer::drawImGui(const NeuralNetwork& net, const Camera& cam)
         ImGui::Checkbox("Neurons",  &params.showNeurons);
         ImGui::SameLine();
         ImGui::Checkbox("Synapses", &params.showSynapses);
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    // Architecture
+    if (ImGui::CollapsingHeader("Architecture",
+                                ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        ImGui::TextDisabled("Layers (excl. input and output):");
+        ImGui::Spacing();
+
+        // Layer count slider (controls total number of layers 2-6)
+        ImGui::SliderInt("Layers", &netConfig.layerCount,
+                         2, NetworkConfig::kMaxLayers);
+
+        // Clamp sizes that might be out of range after a layer count change
+        for (int i = 0; i < netConfig.layerCount; ++i)
+        {
+            if (netConfig.layerSizes[i] < 1)
+                netConfig.layerSizes[i] = 1;
+            if (netConfig.layerSizes[i] > NetworkConfig::kMaxNeurons)
+                netConfig.layerSizes[i] = NetworkConfig::kMaxNeurons;
+        }
+
+        // Per-layer neuron count sliders
+        for (int i = 0; i < netConfig.layerCount; ++i)
+        {
+            const bool isInput  = (i == 0);
+            const bool isOutput = (i == netConfig.layerCount - 1);
+
+            char label[32];
+            if (isInput)        std::snprintf(label, sizeof(label), "Input neurons");
+            else if (isOutput)  std::snprintf(label, sizeof(label), "Output neurons");
+            else                std::snprintf(label, sizeof(label), "Hidden %d", i);
+
+            // Colour-code the label to match the sphere colours
+            ImVec4 col = isInput  ? ImVec4(0.20f, 0.80f, 0.38f, 1.0f)
+                       : isOutput ? ImVec4(0.90f, 0.38f, 0.12f, 1.0f)
+                       :            ImVec4(0.55f, 0.28f, 0.90f, 1.0f);
+            ImGui::PushStyleColor(ImGuiCol_Text, col);
+            ImGui::SliderInt(label, &netConfig.layerSizes[i],
+                             1, NetworkConfig::kMaxNeurons);
+            ImGui::PopStyleColor();
+        }
+
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.20f, 0.45f, 0.20f, 0.90f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.28f, 0.65f, 0.28f, 0.95f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.35f, 0.80f, 0.35f, 1.00f));
+        if (ImGui::Button("  Rebuild Network  ", ImVec2(-1.0f, 0.0f)))
+        {
+            netConfig.rebuildPending  = true;
+            netConfig.inferenceMode   = false; // reset to animation after rebuild
+            std::fill(std::begin(netConfig.inputValues),
+                      std::end  (netConfig.inputValues), 0.0f);
+        }
+        ImGui::PopStyleColor(3);
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    // Inference
+    if (ImGui::CollapsingHeader("Inference",
+                                ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        // Mode toggle
+        if (!netConfig.inferenceMode)
+        {
+            ImGui::TextColored(ImVec4(0.45f, 0.75f, 0.45f, 1.0f),
+                               "* Animation mode");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Switch to Inference"))
+                netConfig.inferenceMode = true;
+        }
+        else
+        {
+            ImGui::TextColored(ImVec4(0.90f, 0.65f, 0.20f, 1.0f),
+                               "* Inference mode");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Switch to Animation"))
+                netConfig.inferenceMode = false;
+        }
+
+        ImGui::Spacing();
+
+        if (netConfig.inferenceMode)
+        {
+            // Input sliders
+            const int inputCount = netConfig.layerSizes[0];
+            ImGui::TextDisabled("Set input activations:");
+            for (int i = 0; i < inputCount; ++i)
+            {
+                char label[16];
+                std::snprintf(label, sizeof(label), "x%d", i);
+                ImGui::PushStyleColor(ImGuiCol_SliderGrab,
+                                      ImVec4(0.20f, 0.80f, 0.38f, 1.0f));
+                ImGui::SliderFloat(label, &netConfig.inputValues[i],
+                                   0.0f, 1.0f, "%.3f");
+                ImGui::PopStyleColor();
+            }
+
+            ImGui::Spacing();
+
+            // Output readout
+            const auto& neurons    = net.getNeurons();
+            const int   layerCount = net.getLayerCount();
+            if (layerCount > 0)
+            {
+                const int      outLayer = layerCount - 1;
+                const uint32_t outBase  = net.layerStart(outLayer);
+                const int      outCount = net.getLayers()[outLayer].neuronCount;
+
+                ImGui::TextDisabled("Output activations:");
+                for (int i = 0; i < outCount; ++i)
+                {
+                    const float v = neurons[outBase + i].activation;
+                    char label[16], overlay[16];
+                    std::snprintf(label,   sizeof(label),   "y%d", i);
+                    std::snprintf(overlay, sizeof(overlay), "%.3f", v);
+
+                    ImGui::PushStyleColor(ImGuiCol_PlotHistogram,
+                                          ImVec4(0.90f, 0.38f, 0.12f, 1.0f));
+                    ImGui::ProgressBar(v, ImVec2(160.0f, 0.0f), overlay);
+                    ImGui::PopStyleColor();
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("%s", label);
+                }
+            }
+        }
+        else
+        {
+            ImGui::TextDisabled("Sin-wave oscillators drive the\n"
+                                "input layer. Switch to Inference\n"
+                                "to set inputs manually.");
+        }
     }
 
     ImGui::Spacing();
@@ -470,19 +608,27 @@ void Renderer::drawImGui(const NeuralNetwork& net, const Camera& cam)
             const uint32_t base  = net.layerStart(li);
             const int      count = desc.neuronCount;
 
-            float avg = 0.0f;
+            float avg = 0.0f, mx = 0.0f;
             for (int ni = 0; ni < count; ++ni)
-                avg += neurons[base + ni].activation;
+            {
+                const float a = neurons[base + ni].activation;
+                avg += a;
+                if (a > mx) mx = a;
+            }
             avg /= static_cast<float>(count);
 
-            ImGui::TextDisabled("  %-10s  n=%-2d  avg=%.2f",
-                                desc.label.c_str(), count, avg);
-            ImGui::SameLine();
-
             const glm::vec3 lc = layerColor(li, total);
+            ImGui::PushStyleColor(ImGuiCol_Text,
+                                  ImVec4(lc.r, lc.g, lc.b, 1.0f));
+            ImGui::Text("%-10s", desc.label.c_str());
+            ImGui::PopStyleColor();
+
+            ImGui::SameLine();
+            ImGui::TextDisabled("n=%-2d avg=%.2f max=%.2f", count, avg, mx);
+
             ImGui::PushStyleColor(ImGuiCol_PlotHistogram,
                                   ImVec4(lc.r, lc.g, lc.b, 1.0f));
-            ImGui::ProgressBar(avg, ImVec2(-1.0f, 6.0f), "");
+            ImGui::ProgressBar(avg, ImVec2(-1.0f, 4.0f), "");
             ImGui::PopStyleColor();
         }
     }
@@ -507,3 +653,4 @@ void Renderer::drawImGui(const NeuralNetwork& net, const Camera& cam)
 
     ImGui::End();
 }
+

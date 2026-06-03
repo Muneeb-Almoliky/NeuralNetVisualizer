@@ -44,6 +44,7 @@ private:
     // Per-frame
     void update(float dt);
     void render();
+    void rebuildNetwork();   // re-creates the NeuralNetwork from netConfig
 
     // GLFW static callback trampolines
     // Each retrieves the Application* stored via glfwSetWindowUserPointer and

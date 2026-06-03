@@ -65,6 +65,21 @@ public:
         bool  showSynapses = true;
     } params;
 
+    // Network configuration (written by ImGui, read by Application)
+    // Application checks rebuildPending each frame and calls rebuildNetwork().
+    struct NetworkConfig
+    {
+        static constexpr int kMaxLayers  = 6;
+        static constexpr int kMaxNeurons = 16;
+
+        int  layerCount             = 4;
+        int  layerSizes[kMaxLayers] = {4, 8, 6, 3, 0, 0};
+        bool rebuildPending         = false; // Application resets this after handling
+
+        bool  inferenceMode           = false;
+        float inputValues[kMaxNeurons] = {};  // written by input sliders
+    } netConfig;
+
     // Must be called once, after a valid OpenGL 3.3 context is current.
     bool init();
 

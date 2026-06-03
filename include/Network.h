@@ -45,11 +45,19 @@ public:
                float layerSpacing  = 3.0f,
                float neuronSpacing = 1.2f);
 
-    // Advance the live activation simulation by dt seconds.
+    // Advance the live animation simulation by dt seconds.
     // Input neurons are driven by phase-shifted sinusoidal oscillators;
-    // subsequent layers receive a sigmoid of the weighted sum of the
-    // previous layer, producing a continuously flowing signal.
+    // subsequent layers receive sigmoid of the weighted sum of the previous layer.
     void tick(float dt);
+
+    // Set input-layer activations directly from an external array.
+    // Values are clamped to [0,1]; entries beyond neuronCount are ignored;
+    // missing entries default to 0.
+    void setInputs(const float* values, int count);
+
+    // Run one deterministic forward pass from the current input activations.
+    // Call after setInputs() to propagate through all hidden and output layers.
+    void forwardPass();
 
     // Accessors
     [[nodiscard]] const std::vector<Neuron>&    getNeurons()  const { return m_neurons;  }
