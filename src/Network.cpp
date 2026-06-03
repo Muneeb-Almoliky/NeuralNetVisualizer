@@ -6,6 +6,8 @@
 
 #include <algorithm> // std::clamp
 #include <cmath>     // std::exp, std::sin
+#include <fstream>
+#include <sstream>
 #include <random>
 
 // Helpers
@@ -181,4 +183,90 @@ void NeuralNetwork::forwardPass()
             m_neurons[idx].activation = sigmoid(m_dstBuf[idx]);
         }
     }
+}
+
+// loadWeights
+// Reads a CSV file (one line per layer transition).
+// The first two columns of each line must be `srcCount` and `dstCount`.
+// The remaining columns are the weight matrix for that transition flattened in
+// PyTorch / row-major [dst_count][src_count] order.
+// Rebuilds the network to match the discovered architecture.
+std::vector<NeuralNetwork::LayerDesc> NeuralNetwork::loadWeights(const char* path)
+{
+    std::ifstream file(path);
+    if (!file.is_open()) return {};
+
+    std::vector<LayerDesc>          newLayers;
+    std::vector<std::vector<float>> parsedWeights;
+    std::string                     line;
+    int                             expectedNextSrc = -1;
+    int                             layerIndex      = 0;
+
+    while (std::getline(file, line))
+    {
+        if (line.empty()) continue;
+
+        std::istringstream ss(line);
+        std::string        token;
+        std::vector<float> row;
+
+        while (std::getline(ss, token, ','))
+        {
+            try         { row.push_back(std::stof(token)); }
+            catch (...) { return {}; }
+        }
+
+        // We need at least srcCount, dstCount, and 1 weight
+        if (row.size() < 3) return {};
+
+        const int srcCount = static_cast<int>(row[0]);
+        const int dstCount = static_cast<int>(row[1]);
+
+        // Validate shape matches provided weights
+        if (static_cast<int>(row.size()) - 2 != srcCount * dstCount) return {};
+
+        // Ensure layer sequence matches (e.g., transition 1 dst == transition 2 src)
+        if (expectedNextSrc != -1 && srcCount != expectedNextSrc) return {};
+
+        // For the first line, add the input layer
+        if (newLayers.empty())
+            newLayers.push_back({srcCount, "Input"});
+
+        // Add the destination layer
+        char label[32];
+        std::snprintf(label, sizeof(label), "Layer %d", layerIndex + 1);
+        newLayers.push_back({dstCount, label});
+
+        // Store just the weights (drop the first two shape columns)
+        parsedWeights.emplace_back(row.begin() + 2, row.end());
+
+        expectedNextSrc = dstCount;
+        layerIndex++;
+    }
+
+    if (newLayers.empty()) return {};
+    newLayers.back().label = "Output";
+
+    // Apply the new architecture
+    build(newLayers);
+
+    // Apply the weights
+    int synapseBase = 0;
+    for (size_t li = 0; li < parsedWeights.size(); ++li)
+    {
+        const int srcCount   = newLayers[li].neuronCount;
+        const int dstCount   = newLayers[li + 1].neuronCount;
+        const auto& w        = parsedWeights[li];
+
+        // Remap: CSV is [dst][src] (PyTorch row-major);
+        // synapses are stored src-major: base + si*dstCount + di
+        for (int si = 0; si < srcCount; ++si)
+            for (int di = 0; di < dstCount; ++di)
+                m_synapses[synapseBase + si * dstCount + di].weight =
+                    w[di * srcCount + si];
+
+        synapseBase += srcCount * dstCount;
+    }
+
+    return newLayers;
 }

@@ -33,6 +33,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     glfw
     glm::glm
     imgui::imgui
+    Comdlg32
 )
 
 # ── MSVC-specific flags ───────────────────────────────────────────────────────

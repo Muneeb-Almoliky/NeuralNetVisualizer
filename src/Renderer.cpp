@@ -12,6 +12,10 @@
 #include <cmath>
 #include <cstdio>
 
+// Simple text badges used in the Load Weights feedback row
+#define ICON_OK  "[OK]"
+#define ICON_ERR "[!]"
+
 // Embedded GLSL — Neuron (sphere) shaders
 static const char* kNeuronVert = R"glsl(
 #version 330 core
@@ -315,6 +319,8 @@ void Renderer::draw(const NeuralNetwork& net,
     // Synapses drawn first so opaque neurons composite on top
     if (params.showSynapses) drawSynapses(net, viewProj);
     if (params.showNeurons)  drawNeurons (net, viewProj, camPos);
+
+    pushHistory(net);
 }
 
 // drawNeurons
@@ -417,11 +423,38 @@ void Renderer::drawSynapses(const NeuralNetwork& net,
     glDisable(GL_BLEND);
 }
 
+// pushHistory
+// Called every frame from draw(). Lazily resizes m_history when the
+// network is rebuilt, then samples the mean activation of each layer.
+void Renderer::pushHistory(const NeuralNetwork& net)
+{
+    const int total = net.getLayerCount();
+    if (total == 0) return;
+
+    // Reset buffers whenever the architecture changes
+    if (static_cast<int>(m_history.size()) != total)
+        m_history.assign(total, LayerHistory{});
+
+    const auto& neurons = net.getNeurons();
+    const auto& layers  = net.getLayers();
+
+    for (int li = 0; li < total; ++li)
+    {
+        const uint32_t base  = net.layerStart(li);
+        const int      count = layers[li].neuronCount;
+        float avg = 0.0f;
+        for (int ni = 0; ni < count; ++ni)
+            avg += neurons[base + ni].activation;
+        m_history[li].push(avg / static_cast<float>(count));
+    }
+}
+
 // drawImGui
 void Renderer::drawImGui(const NeuralNetwork& net, const Camera& cam)
 {
     ImGui::SetNextWindowPos (ImVec2(20.0f, 20.0f), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(315.0f, 0.0f), ImGuiCond_Always);
+    // Fixed size to ensure it fits in the 720p window and spawns a scrollbar
+    ImGui::SetNextWindowSize(ImVec2(340.0f, 680.0f), ImGuiCond_Always);
     ImGui::Begin("Neural Net Visualizer", nullptr,
                  ImGuiWindowFlags_NoResize   |
                  ImGuiWindowFlags_NoMove     |
@@ -453,6 +486,21 @@ void Renderer::drawImGui(const NeuralNetwork& net, const Camera& cam)
     if (ImGui::CollapsingHeader("Architecture",
                                 ImGuiTreeNodeFlags_DefaultOpen))
     {
+        if (netConfig.weightsLoaded)
+        {
+            ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.2f, 1.0f), "Locked by imported weights.");
+            if (ImGui::Button("Unlock & Reset Architecture"))
+            {
+                netConfig.weightsLoaded     = false;
+                netConfig.rebuildPending    = true;
+                netConfig.lastLoadAttempted = false; // Clear the success message
+                netConfig.weightPath[0]     = '\0';  // Clear the text box
+            }
+            ImGui::Spacing();
+        }
+
+        ImGui::BeginDisabled(netConfig.weightsLoaded);
+
         ImGui::TextDisabled("Layers (excl. input and output):");
         ImGui::Spacing();
 
@@ -502,6 +550,8 @@ void Renderer::drawImGui(const NeuralNetwork& net, const Camera& cam)
                       std::end  (netConfig.inputValues), 0.0f);
         }
         ImGui::PopStyleColor(3);
+
+        ImGui::EndDisabled();
     }
 
     ImGui::Spacing();
@@ -630,6 +680,129 @@ void Renderer::drawImGui(const NeuralNetwork& net, const Camera& cam)
                                   ImVec4(lc.r, lc.g, lc.b, 1.0f));
             ImGui::ProgressBar(avg, ImVec2(-1.0f, 4.0f), "");
             ImGui::PopStyleColor();
+        }
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    // Activation History
+    if (ImGui::CollapsingHeader("Activation History"))
+    {
+        const int total = net.getLayerCount();
+        if (total == 0 || static_cast<int>(m_history.size()) != total)
+        {
+            ImGui::TextDisabled("No data yet.");
+        }
+        else
+        {
+            float linBuf[LayerHistory::kHistLen];
+            for (int li = 0; li < total; ++li)
+            {
+                const LayerHistory& h  = m_history[li];
+                if (h.count == 0) continue;
+
+                h.linearise(linBuf);
+
+                const glm::vec3 lc = layerColor(li, total);
+                ImGui::PushStyleColor(ImGuiCol_PlotLines,
+                                      ImVec4(lc.r, lc.g, lc.b, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_PlotLinesHovered,
+                                      ImVec4(lc.r * 1.3f, lc.g * 1.3f, lc.b * 1.3f, 1.0f));
+
+                char label[32];
+                std::snprintf(label, sizeof(label), "%s##h%d",
+                              net.getLayers()[li].label.c_str(), li);
+                ImGui::PlotLines(label, linBuf, h.count, 0,
+                                 nullptr, 0.0f, 1.0f, ImVec2(-1.0f, 38.0f));
+
+                ImGui::PopStyleColor(2);
+            }
+        }
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    // Load Weights
+    if (ImGui::CollapsingHeader("Load Weights"))
+    {
+        ImGui::TextDisabled("Import trained weights from a CSV file.");
+        ImGui::Spacing();
+
+        // File path input + browse button
+        ImGui::SetNextItemWidth(-80.0f);
+        ImGui::InputText("##wpath", netConfig.weightPath,
+                         sizeof(netConfig.weightPath));
+        ImGui::SameLine();
+        if (ImGui::Button("Browse"))
+            netConfig.loadPending = true;   // Application opens file dialog
+
+        // Manual load from typed path
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.15f, 0.35f, 0.65f, 0.90f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.50f, 0.90f, 0.95f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.28f, 0.60f, 1.00f, 1.00f));
+        if (ImGui::Button("  Load from path  ", ImVec2(-1.0f, 0.0f)))
+        {
+            netConfig.loadPending       = true;
+            netConfig.lastLoadAttempted = false; // force re-evaluation
+        }
+        ImGui::PopStyleColor(3);
+
+        // Result feedback
+        if (netConfig.lastLoadAttempted)
+        {
+            if (netConfig.lastLoadOk)
+                ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.4f, 1.0f),
+                                   ICON_OK " Weights loaded successfully.");
+            else
+                ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f),
+                                   ICON_ERR " Load failed. Check path and layer sizes.");
+        }
+
+        ImGui::Spacing();
+        if (ImGui::TreeNode("Python export snippet"))
+        {
+            const char* snippet = 
+                "import torch, csv\n"
+                "m = torch.load('model.pth', map_location='cpu')\n"
+                "rows = []\n"
+                "for k,v in m.state_dict().items():\n"
+                "    if 'weight' in k and len(v.shape) == 2:\n"
+                "        out_f, in_f = v.shape\n"
+                "        rows.append([in_f, out_f] + v.detach().cpu()\n"
+                "                     .numpy().flatten().tolist())\n"
+                "with open('weights.csv','w',newline='') as f:\n"
+                "    w = csv.writer(f)\n"
+                "    for r in rows: w.writerow(r)";
+
+            static double lastCopyTime = -100.0;
+            if (ImGui::Button("Copy to Clipboard"))
+            {
+                ImGui::SetClipboardText(snippet);
+                lastCopyTime = ImGui::GetTime();
+            }
+
+            if (ImGui::GetTime() - lastCopyTime < 2.0)
+            {
+                ImGui::SameLine();
+                ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.4f, 1.0f), ICON_OK " Copied!");
+            }
+
+            ImGui::Spacing();
+            
+            // Render text inside a scrollable child region so it doesn't wrap and break python indentation
+            ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.1f, 0.1f, 0.1f, 0.3f));
+            ImGui::BeginChild("SnippetScroll", ImVec2(0, 175), true, ImGuiWindowFlags_HorizontalScrollbar);
+            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
+            ImGui::TextUnformatted(snippet);
+            ImGui::PopStyleColor();
+            ImGui::EndChild();
+            ImGui::PopStyleColor();
+            
+            ImGui::TreePop();
         }
     }
 

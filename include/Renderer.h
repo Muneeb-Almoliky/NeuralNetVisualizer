@@ -51,6 +51,30 @@ struct GlBuffer
 };
 
 // Renderer
+// Circular buffer that records one float value per frame for up to kHistLen frames.
+struct LayerHistory
+{
+    static constexpr int kHistLen = 128;
+    float buf[kHistLen] = {};
+    int   head          = 0;
+    int   count         = 0;
+
+    void push(float v)
+    {
+        buf[head] = v;
+        head      = (head + 1) % kHistLen;
+        if (count < kHistLen) ++count;
+    }
+
+    // Fills out[0..count-1] in chronological order (oldest first).
+    void linearise(float* out) const
+    {
+        const int start = (count < kHistLen) ? 0 : head;
+        for (int i = 0; i < count; ++i)
+            out[i] = buf[(start + i) % kHistLen];
+    }
+};
+
 class Renderer
 {
 public:
@@ -78,6 +102,13 @@ public:
 
         bool  inferenceMode           = false;
         float inputValues[kMaxNeurons] = {};  // written by input sliders
+
+        // Weight file loader
+        char weightPath[512]  = {};   // text-input buffer
+        bool loadPending      = false; // Application calls loadWeights() then clears
+        bool lastLoadOk       = false;
+        bool lastLoadAttempted= false;
+        bool weightsLoaded    = false; // locks architecture sliders
     } netConfig;
 
     // Must be called once, after a valid OpenGL 3.3 context is current.
@@ -113,6 +144,9 @@ private:
     GlBuffer m_sphereEBO;
     GLsizei  m_sphereIndexCount = 0;
 
+    // Activation history (one LayerHistory per layer)
+    std::vector<LayerHistory> m_history;
+
     // Synapse line geometry (dynamic — rebuilt each frame)
     GlVAO              m_lineVAO;
     GlBuffer           m_lineVBO;
@@ -124,6 +158,7 @@ private:
                       const glm::vec3& camPos);
     void drawSynapses(const NeuralNetwork& net,
                       const glm::mat4& viewProj);
+    void pushHistory (const NeuralNetwork& net); // updates m_history each frame
 
     // Static helpers
     static GLuint     compileShader(GLenum type, const char* src);

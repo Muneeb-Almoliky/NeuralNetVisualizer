@@ -1,49 +1,52 @@
 #pragma once
 
-// Data model for a fully-connected Multi-Layer Perceptron.
-// Stores neuron positions, real-time activations, synapse weights,
-// and drives a live forward-pass animation via tick().
-
 #include <glm/glm.hpp>
 
 #include <cstdint>
 #include <string>
 #include <vector>
 
-// Neuron
+// Data structures
+// A single neuron: its world-space position, which layer it belongs to,
+// and its current activation in [0,1].
 struct Neuron
 {
-    glm::vec3 position;   // world-space centre of this neuron's sphere
-    float     activation; // current activation in [0, 1]
-    int       layerIndex; // which layer this neuron belongs to
+    glm::vec3 position   = glm::vec3(0.0f);
+    float     activation = 0.0f;
+    int       layerIndex = 0;
 };
 
-// Synapse
+// A weighted directed edge between two neurons.
 struct Synapse
 {
-    uint32_t src;    // index into NeuralNetwork::getNeurons()
-    uint32_t dst;    // index into NeuralNetwork::getNeurons()
-    float    weight; // signed connection strength in [-1, 1]
+    uint32_t src    = 0;
+    uint32_t dst    = 0;
+    float    weight = 0.0f;
 };
 
 // NeuralNetwork
+// Holds the fully-connected MLP layout in 3D space and runs both an animated
+// forward pass (tick) and a deterministic inference forward pass (forwardPass).
 class NeuralNetwork
 {
 public:
-    // Per-layer descriptor passed to build().
+    // Description of one layer, supplied to build().
     struct LayerDesc
     {
-        int         neuronCount;
-        std::string label; // e.g. "Input", "Hidden 1", "Output"
+        int         neuronCount = 1;
+        std::string label;
     };
 
-    // Construct and lay out a fully-connected MLP.
-    //   layers        : ordered list of layer descriptors (input → output)
-    //   layerSpacing  : Z-distance between consecutive layers
-    //   neuronSpacing : Y-distance between consecutive neurons within a layer
+    // Lifecycle
+
+    // (Re-)construct the network from a list of layer descriptors.
+    // Positions neurons in 3D, creates all fully-connected synapses with seeded
+    // random weights, and resets the simulation time.
     void build(const std::vector<LayerDesc>& layers,
                float layerSpacing  = 3.0f,
                float neuronSpacing = 1.2f);
+
+    // Simulation
 
     // Advance the live animation simulation by dt seconds.
     // Input neurons are driven by phase-shifted sinusoidal oscillators;
@@ -59,27 +62,35 @@ public:
     // Call after setInputs() to propagate through all hidden and output layers.
     void forwardPass();
 
+    // Weight I/O
+
+    // Load synaptic weights and architecture from a CSV file.
+    // Expected format — one line per layer transition, comma-separated:
+    //   Line 0: srcCount, dstCount, weights...
+    //   Line 1: srcCount, dstCount, weights...
+    // Rebuilds the network to match the discovered architecture.
+    // Returns the discovered layers on success, or empty vector on failure.
+    std::vector<LayerDesc> loadWeights(const char* path);
+
     // Accessors
     [[nodiscard]] const std::vector<Neuron>&    getNeurons()  const { return m_neurons;  }
     [[nodiscard]] const std::vector<Synapse>&   getSynapses() const { return m_synapses; }
     [[nodiscard]] const std::vector<LayerDesc>& getLayers()   const { return m_layers;   }
 
-    [[nodiscard]] int      getLayerCount()       const { return static_cast<int>(m_layers.size()); }
-    [[nodiscard]] int      getNeuronCount()       const { return static_cast<int>(m_neurons.size()); }
-    [[nodiscard]] int      getSynapseCount()      const { return static_cast<int>(m_synapses.size()); }
+    [[nodiscard]] int getLayerCount()   const { return static_cast<int>(m_layers.size());   }
+    [[nodiscard]] int getNeuronCount()  const { return static_cast<int>(m_neurons.size());  }
+    [[nodiscard]] int getSynapseCount() const { return static_cast<int>(m_synapses.size()); }
 
-    // Index of the first neuron that belongs to the given layer.
-    [[nodiscard]] uint32_t layerStart(int layer) const { return m_layerStart[layer]; }
+    // Returns the index of the first neuron in layer li.
+    [[nodiscard]] uint32_t layerStart(int li) const { return m_layerStart[li]; }
 
 private:
+    std::vector<LayerDesc> m_layers;
     std::vector<Neuron>    m_neurons;
     std::vector<Synapse>   m_synapses;
-    std::vector<LayerDesc> m_layers;
-    std::vector<uint32_t>  m_layerStart; // first neuron index per layer
-    std::vector<float>     m_dstBuf;     // scratch buffer for forward pass
+    std::vector<uint32_t>  m_layerStart;  // m_layerStart[li] = first neuron idx
+    std::vector<float>     m_dstBuf;      // scratch accumulator for forward pass
+    float                  m_time = 0.0f;
 
-    float m_time = 0.0f; // accumulated simulation time (seconds)
-
-    // Logistic activation function.
-    [[nodiscard]] static float sigmoid(float x);
+    static float sigmoid(float x);
 };

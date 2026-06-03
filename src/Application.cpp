@@ -11,6 +11,30 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+
+// Platform helpers
+#ifdef _WIN32
+// GLAD must be included before windows.h to avoid WGL redefinition warnings.
+#include <windows.h>
+#include <commdlg.h>
+
+// Opens the Windows "Open File" dialog and returns the chosen path,
+// or an empty string if the user cancels.
+static std::string openFileDialog()
+{
+    char path[MAX_PATH] = {};
+    OPENFILENAMEA ofn   = {};
+    ofn.lStructSize     = sizeof(ofn);
+    ofn.lpstrFilter     = "CSV Files\0*.csv\0All Files\0*.*\0";
+    ofn.lpstrFile       = path;
+    ofn.nMaxFile        = MAX_PATH;
+    ofn.Flags           = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+    return GetOpenFileNameA(&ofn) ? std::string(path) : std::string{};
+}
+#else
+static std::string openFileDialog() { return {}; } // stub for non-Windows
+#endif
 
 static constexpr char kGlslVersion[] = "#version 330 core";
 
@@ -65,14 +89,61 @@ void Application::update(float dt)
 {
     auto& cfg = m_renderer.netConfig;
 
-    // Architecture rebuild requested from the UI
+    // Architecture rebuild
     if (cfg.rebuildPending)
     {
         cfg.rebuildPending = false;
+        cfg.weightsLoaded  = false; // manual rebuild clears custom weights
         rebuildNetwork();
     }
 
-    // Inference mode: user-driven forward pass; Animation mode: sin-wave tick
+    // Weight file load
+    if (cfg.loadPending)
+    {
+        cfg.loadPending = false;
+
+        // If the path field is empty the user clicked Browse — open the picker
+        const bool pathIsEmpty = (cfg.weightPath[0] == '\0');
+        if (pathIsEmpty)
+        {
+            const std::string chosen = openFileDialog();
+            if (!chosen.empty())
+            {
+                std::strncpy(cfg.weightPath, chosen.c_str(),
+                             sizeof(cfg.weightPath) - 1);
+                cfg.weightPath[sizeof(cfg.weightPath) - 1] = '\0';
+                
+                auto loadedArch = m_network.loadWeights(cfg.weightPath);
+                cfg.lastLoadOk        = !loadedArch.empty();
+                cfg.lastLoadAttempted = true;
+                
+                if (cfg.lastLoadOk)
+                {
+                    cfg.weightsLoaded = true;
+                    cfg.layerCount = std::min((int)loadedArch.size(), Renderer::NetworkConfig::kMaxLayers);
+                    for (int i = 0; i < cfg.layerCount; ++i)
+                        cfg.layerSizes[i] = loadedArch[i].neuronCount;
+                }
+            }
+        }
+        else
+        {
+            // The path was typed manually or we're reloading an existing path
+            auto loadedArch = m_network.loadWeights(cfg.weightPath);
+            cfg.lastLoadOk        = !loadedArch.empty();
+            cfg.lastLoadAttempted = true;
+            
+            if (cfg.lastLoadOk)
+            {
+                cfg.weightsLoaded = true;
+                cfg.layerCount = std::min((int)loadedArch.size(), Renderer::NetworkConfig::kMaxLayers);
+                for (int i = 0; i < cfg.layerCount; ++i)
+                    cfg.layerSizes[i] = loadedArch[i].neuronCount;
+            }
+        }
+    }
+
+    // Forward pass
     if (cfg.inferenceMode)
     {
         m_network.setInputs(cfg.inputValues,
