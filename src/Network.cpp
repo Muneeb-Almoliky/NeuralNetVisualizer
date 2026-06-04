@@ -16,6 +16,18 @@ float NeuralNetwork::sigmoid(float x)
     return 1.0f / (1.0f + std::exp(-x));
 }
 
+static float applyActivation(float x, NeuralNetwork::ActivationType type)
+{
+    switch (type)
+    {
+        case NeuralNetwork::ActivationType::Sigmoid: return 1.0f / (1.0f + std::exp(-x));
+        case NeuralNetwork::ActivationType::ReLU:    return std::max(0.0f, x);
+        case NeuralNetwork::ActivationType::Tanh:    return std::tanh(x);
+        case NeuralNetwork::ActivationType::Linear:  return x;
+    }
+    return x;
+}
+
 // build()
 void NeuralNetwork::build(const std::vector<LayerDesc>& layers,
                           float layerSpacing,
@@ -53,6 +65,7 @@ void NeuralNetwork::build(const std::vector<LayerDesc>& layers,
             Neuron n;
             n.layerIndex = li;
             n.activation = actDist(rng);
+            n.bias       = 0.0f; // Default bias to zero on build
             // X=0 (all neurons centred); Y spread vertically; Z = layer depth
             n.position = glm::vec3(
                 0.0f,
@@ -132,11 +145,12 @@ void NeuralNetwork::tick(float dt)
             }
         }
 
-        // Apply sigmoid and write back
+        // Apply activation with bias and write back
+        const auto actType = m_layers[li].activation;
         for (int di = 0; di < dstCount; ++di)
         {
             const uint32_t idx = dstBase + static_cast<uint32_t>(di);
-            m_neurons[idx].activation = sigmoid(m_dstBuf[idx]);
+            m_neurons[idx].activation = applyActivation(m_dstBuf[idx] + m_neurons[idx].bias, actType);
         }
     }
 }
@@ -176,11 +190,12 @@ void NeuralNetwork::forwardPass()
                 m_dstBuf[s.dst] += m_neurons[s.src].activation * s.weight;
         }
 
-        // Apply activation function
+        // Apply activation function with bias
+        const auto actType = m_layers[li].activation;
         for (int di = 0; di < dstCount; ++di)
         {
             const uint32_t idx = dstBase + static_cast<uint32_t>(di);
-            m_neurons[idx].activation = sigmoid(m_dstBuf[idx]);
+            m_neurons[idx].activation = applyActivation(m_dstBuf[idx] + m_neurons[idx].bias, actType);
         }
     }
 }
@@ -198,6 +213,7 @@ std::vector<NeuralNetwork::LayerDesc> NeuralNetwork::loadWeights(const char* pat
 
     std::vector<LayerDesc>          newLayers;
     std::vector<std::vector<float>> parsedWeights;
+    std::vector<std::vector<float>> parsedBiases;
     std::string                     line;
     int                             expectedNextSrc = -1;
     int                             layerIndex      = 0;
@@ -222,23 +238,34 @@ std::vector<NeuralNetwork::LayerDesc> NeuralNetwork::loadWeights(const char* pat
         const int srcCount = static_cast<int>(row[0]);
         const int dstCount = static_cast<int>(row[1]);
 
-        // Validate shape matches provided weights
-        if (static_cast<int>(row.size()) - 2 != srcCount * dstCount) return {};
+        int remaining = static_cast<int>(row.size()) - 2;
+        int expectedWeights = srcCount * dstCount;
+
+        std::vector<float> biases;
+        std::vector<float> weights;
+
+        if (remaining != dstCount + expectedWeights) {
+            return {}; // Invalid format length (must have biases)
+        }
+
+        biases.assign(row.begin() + 2, row.begin() + 2 + dstCount);
+        weights.assign(row.begin() + 2 + dstCount, row.end());
 
         // Ensure layer sequence matches (e.g., transition 1 dst == transition 2 src)
         if (expectedNextSrc != -1 && srcCount != expectedNextSrc) return {};
 
-        // For the first line, add the input layer
+        // For the first line, add the input layer (Input layer activation is ignored)
         if (newLayers.empty())
-            newLayers.push_back({srcCount, "Input"});
+            newLayers.push_back({srcCount, ActivationType::Linear, "Input"});
 
-        // Add the destination layer
+        // Add the destination layer (Default to Sigmoid for backward compatibility)
         char label[32];
         std::snprintf(label, sizeof(label), "Layer %d", layerIndex + 1);
-        newLayers.push_back({dstCount, label});
+        newLayers.push_back({dstCount, ActivationType::Sigmoid, label});
 
-        // Store just the weights (drop the first two shape columns)
-        parsedWeights.emplace_back(row.begin() + 2, row.end());
+        // Store the parsed biases and weights
+        parsedBiases.emplace_back(std::move(biases));
+        parsedWeights.emplace_back(std::move(weights));
 
         expectedNextSrc = dstCount;
         layerIndex++;
@@ -250,13 +277,19 @@ std::vector<NeuralNetwork::LayerDesc> NeuralNetwork::loadWeights(const char* pat
     // Apply the new architecture
     build(newLayers);
 
-    // Apply the weights
+    // Apply the weights and biases
     int synapseBase = 0;
     for (size_t li = 0; li < parsedWeights.size(); ++li)
     {
         const int srcCount   = newLayers[li].neuronCount;
         const int dstCount   = newLayers[li + 1].neuronCount;
         const auto& w        = parsedWeights[li];
+        const auto& b        = parsedBiases[li];
+        const uint32_t dstBase = m_layerStart[li + 1];
+
+        // Apply biases to destination layer
+        for (int di = 0; di < dstCount; ++di)
+            m_neurons[dstBase + di].bias = b[di];
 
         // Remap: CSV is [dst][src] (PyTorch row-major);
         // synapses are stored src-major: base + si*dstCount + di

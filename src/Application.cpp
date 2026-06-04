@@ -120,9 +120,14 @@ void Application::update(float dt)
                 if (cfg.lastLoadOk)
                 {
                     cfg.weightsLoaded = true;
-                    cfg.layerCount = std::min((int)loadedArch.size(), Renderer::NetworkConfig::kMaxLayers);
-                    for (int i = 0; i < cfg.layerCount; ++i)
-                        cfg.layerSizes[i] = loadedArch[i].neuronCount;
+                    cfg.layerSizes.clear();
+                    cfg.layerActivations.clear();
+                    for (const auto& desc : loadedArch)
+                    {
+                        cfg.layerSizes.push_back(desc.neuronCount);
+                        cfg.layerActivations.push_back(desc.activation);
+                    }
+                    cfg.inputValues.resize(cfg.layerSizes.front(), 0.0f);
                 }
             }
         }
@@ -136,9 +141,14 @@ void Application::update(float dt)
             if (cfg.lastLoadOk)
             {
                 cfg.weightsLoaded = true;
-                cfg.layerCount = std::min((int)loadedArch.size(), Renderer::NetworkConfig::kMaxLayers);
-                for (int i = 0; i < cfg.layerCount; ++i)
-                    cfg.layerSizes[i] = loadedArch[i].neuronCount;
+                cfg.layerSizes.clear();
+                cfg.layerActivations.clear();
+                for (const auto& desc : loadedArch)
+                {
+                    cfg.layerSizes.push_back(desc.neuronCount);
+                    cfg.layerActivations.push_back(desc.activation);
+                }
+                cfg.inputValues.resize(cfg.layerSizes.front(), 0.0f);
             }
         }
     }
@@ -146,8 +156,8 @@ void Application::update(float dt)
     // Forward pass
     if (cfg.inferenceMode)
     {
-        m_network.setInputs(cfg.inputValues,
-                            m_network.getLayers()[0].neuronCount);
+        m_network.setInputs(cfg.inputValues.data(),
+                            static_cast<int>(cfg.inputValues.size()));
         m_network.forwardPass();
     }
     else
@@ -280,21 +290,24 @@ bool Application::initScene()
     // Build the initial MLP: Input(4) → Hidden1(8) → Hidden2(6) → Output(3)
     m_network.build(
     {
-        { 4, "Input"    },
-        { 8, "Hidden 1" },
-        { 6, "Hidden 2" },
-        { 3, "Output"   }
+        { 4, NeuralNetwork::ActivationType::Linear,  "Input"    },
+        { 8, NeuralNetwork::ActivationType::Sigmoid, "Hidden 1" },
+        { 6, NeuralNetwork::ActivationType::Sigmoid, "Hidden 2" },
+        { 3, NeuralNetwork::ActivationType::Sigmoid, "Output"   }
     },
     /*layerSpacing=*/  3.0f,
     /*neuronSpacing=*/ 1.2f);
 
     // Sync the UI config to match what was just built
     auto& cfg = m_renderer.netConfig;
-    cfg.layerCount    = 4;
-    cfg.layerSizes[0] = 4;
-    cfg.layerSizes[1] = 8;
-    cfg.layerSizes[2] = 6;
-    cfg.layerSizes[3] = 3;
+    cfg.layerSizes = {4, 8, 6, 3};
+    cfg.layerActivations = {
+        NeuralNetwork::ActivationType::Linear,
+        NeuralNetwork::ActivationType::Sigmoid,
+        NeuralNetwork::ActivationType::Sigmoid,
+        NeuralNetwork::ActivationType::Sigmoid
+    };
+    cfg.inputValues.resize(4, 0.0f);
 
     if (!m_renderer.init())
     {
@@ -313,16 +326,16 @@ void Application::rebuildNetwork()
     const auto& cfg = m_renderer.netConfig;
 
     std::vector<NeuralNetwork::LayerDesc> layers;
-    layers.reserve(cfg.layerCount);
+    layers.reserve(cfg.layerSizes.size());
 
-    for (int i = 0; i < cfg.layerCount; ++i)
+    for (size_t i = 0; i < cfg.layerSizes.size(); ++i)
     {
         std::string label;
-        if      (i == 0)                  label = "Input";
-        else if (i == cfg.layerCount - 1) label = "Output";
-        else                              label = "Hidden " + std::to_string(i);
+        if      (i == 0)                             label = "Input";
+        else if (i == cfg.layerSizes.size() - 1) label = "Output";
+        else                                         label = "Hidden " + std::to_string(i);
 
-        layers.push_back({ cfg.layerSizes[i], std::move(label) });
+        layers.push_back({ cfg.layerSizes[i], cfg.layerActivations[i], std::move(label) });
     }
 
     m_network.build(layers, 3.0f, 1.2f);

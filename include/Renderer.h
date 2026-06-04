@@ -10,12 +10,11 @@
 
 #include <cstdint>
 #include <vector>
+#include "Network.h"
 
 // Forward declarations — avoids pulling heavy headers into every TU
 // that includes Renderer.h.
 class Camera;
-class NeuralNetwork;
-
 // Lightweight RAII wrappers for raw OpenGL handles.
 // Constructors do NOT call GL — call create() explicitly after GLAD is ready.
 // This prevents accidental GL calls before the context exists when these
@@ -93,15 +92,18 @@ public:
     // Application checks rebuildPending each frame and calls rebuildNetwork().
     struct NetworkConfig
     {
-        static constexpr int kMaxLayers  = 6;
-        static constexpr int kMaxNeurons = 16;
+        std::vector<int> layerSizes = {4, 8, 6, 3};
+        std::vector<NeuralNetwork::ActivationType> layerActivations = {
+            NeuralNetwork::ActivationType::Linear,
+            NeuralNetwork::ActivationType::Sigmoid,
+            NeuralNetwork::ActivationType::Sigmoid,
+            NeuralNetwork::ActivationType::Sigmoid
+        };
 
-        int  layerCount             = 4;
-        int  layerSizes[kMaxLayers] = {4, 8, 6, 3, 0, 0};
         bool rebuildPending         = false; // Application resets this after handling
 
-        bool  inferenceMode           = false;
-        float inputValues[kMaxNeurons] = {};  // written by input sliders
+        bool  inferenceMode         = false;
+        std::vector<float> inputValues = {0.0f, 0.0f, 0.0f, 0.0f};  // written by input sliders
 
         // Weight file loader
         char weightPath[512]  = {};   // text-input buffer

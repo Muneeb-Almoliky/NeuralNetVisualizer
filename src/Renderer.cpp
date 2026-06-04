@@ -72,8 +72,9 @@ void main()
     vec3  specular = vec3(0.90) * spec * 0.50;
 
     // Emissive glow — quadratic ramp so only highly-active neurons pop
-    float glow    = uActivation * uActivation;
-    vec3  emissive = vec3(0.25, 0.55, 1.00) * glow * uGlowStrength;
+    float clampedAct = min(uActivation, 2.5);
+    float glow       = clampedAct * clampedAct;
+    vec3  emissive   = vec3(0.25, 0.55, 1.00) * glow * uGlowStrength;
 
     FragColor = vec4(ambient + diffuse + specular + emissive, 1.0);
 }
@@ -504,24 +505,32 @@ void Renderer::drawImGui(const NeuralNetwork& net, const Camera& cam)
         ImGui::TextDisabled("Layers (excl. input and output):");
         ImGui::Spacing();
 
-        // Layer count slider (controls total number of layers 2-6)
-        ImGui::SliderInt("Layers", &netConfig.layerCount,
-                         2, NetworkConfig::kMaxLayers);
+        // Add / Remove layer buttons
+        if (ImGui::Button("Add Layer"))
+        {
+            netConfig.layerSizes.push_back(1);
+            netConfig.layerActivations.push_back(NeuralNetwork::ActivationType::Sigmoid);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Remove Layer") && netConfig.layerSizes.size() > 2)
+        {
+            netConfig.layerSizes.pop_back();
+            netConfig.layerActivations.pop_back();
+        }
+        ImGui::Spacing();
 
-        // Clamp sizes that might be out of range after a layer count change
-        for (int i = 0; i < netConfig.layerCount; ++i)
+        // Clamp sizes that might be out of range
+        for (size_t i = 0; i < netConfig.layerSizes.size(); ++i)
         {
             if (netConfig.layerSizes[i] < 1)
                 netConfig.layerSizes[i] = 1;
-            if (netConfig.layerSizes[i] > NetworkConfig::kMaxNeurons)
-                netConfig.layerSizes[i] = NetworkConfig::kMaxNeurons;
         }
 
-        // Per-layer neuron count sliders
-        for (int i = 0; i < netConfig.layerCount; ++i)
+        // Per-layer neuron count sliders and activation dropdowns
+        for (int i = 0; i < static_cast<int>(netConfig.layerSizes.size()); ++i)
         {
             const bool isInput  = (i == 0);
-            const bool isOutput = (i == netConfig.layerCount - 1);
+            const bool isOutput = (i == static_cast<int>(netConfig.layerSizes.size()) - 1);
 
             char label[32];
             if (isInput)        std::snprintf(label, sizeof(label), "Input neurons");
@@ -532,10 +541,27 @@ void Renderer::drawImGui(const NeuralNetwork& net, const Camera& cam)
             ImVec4 col = isInput  ? ImVec4(0.20f, 0.80f, 0.38f, 1.0f)
                        : isOutput ? ImVec4(0.90f, 0.38f, 0.12f, 1.0f)
                        :            ImVec4(0.55f, 0.28f, 0.90f, 1.0f);
+            
+            ImGui::PushID(i);
             ImGui::PushStyleColor(ImGuiCol_Text, col);
-            ImGui::SliderInt(label, &netConfig.layerSizes[i],
-                             1, NetworkConfig::kMaxNeurons);
+            ImGui::SetNextItemWidth(130.0f);
+            ImGui::SliderInt("##size", &netConfig.layerSizes[i], 1, 64);
             ImGui::PopStyleColor();
+
+            ImGui::SameLine();
+            
+            // Activation dropdown (disabled for input layer)
+            ImGui::BeginDisabled(isInput);
+            ImGui::SetNextItemWidth(70.0f);
+            const char* actNames[] = { "Sigmoid", "ReLU", "Tanh", "Linear" };
+            int currentAct = static_cast<int>(netConfig.layerActivations[i]);
+            if (ImGui::Combo("##act", &currentAct, actNames, 4))
+                netConfig.layerActivations[i] = static_cast<NeuralNetwork::ActivationType>(currentAct);
+            ImGui::EndDisabled();
+
+            ImGui::SameLine();
+            ImGui::Text("%s", label);
+            ImGui::PopID();
         }
 
         ImGui::Spacing();
@@ -586,6 +612,9 @@ void Renderer::drawImGui(const NeuralNetwork& net, const Camera& cam)
         {
             // Input sliders
             const int inputCount = netConfig.layerSizes[0];
+            if (static_cast<int>(netConfig.inputValues.size()) != inputCount)
+                netConfig.inputValues.resize(inputCount, 0.0f);
+
             ImGui::TextDisabled("Set input activations:");
             for (int i = 0; i < inputCount; ++i)
             {
@@ -697,7 +726,17 @@ void Renderer::drawImGui(const NeuralNetwork& net, const Camera& cam)
         }
         else
         {
+            // Find global max activation for plotting to handle ReLU > 1.0
+            float globalMax = 0.0f;
             float linBuf[LayerHistory::kHistLen];
+            for (int li = 0; li < total; ++li)
+            {
+                m_history[li].linearise(linBuf);
+                for (int i = 0; i < m_history[li].count; ++i)
+                    if (linBuf[i] > globalMax) globalMax = linBuf[i];
+            }
+            float scaleMax = std::max(1.0f, globalMax * 1.2f);
+
             for (int li = 0; li < total; ++li)
             {
                 const LayerHistory& h  = m_history[li];
@@ -715,7 +754,7 @@ void Renderer::drawImGui(const NeuralNetwork& net, const Camera& cam)
                 std::snprintf(label, sizeof(label), "%s##h%d",
                               net.getLayers()[li].label.c_str(), li);
                 ImGui::PlotLines(label, linBuf, h.count, 0,
-                                 nullptr, 0.0f, 1.0f, ImVec2(-1.0f, 38.0f));
+                                 nullptr, 0.0f, scaleMax, ImVec2(-1.0f, 38.0f));
 
                 ImGui::PopStyleColor(2);
             }
@@ -769,11 +808,13 @@ void Renderer::drawImGui(const NeuralNetwork& net, const Camera& cam)
                 "import torch, csv\n"
                 "m = torch.load('model.pth', map_location='cpu')\n"
                 "rows = []\n"
-                "for k,v in m.state_dict().items():\n"
+                "state = m.state_dict()\n"
+                "for k, v in state.items():\n"
                 "    if 'weight' in k and len(v.shape) == 2:\n"
                 "        out_f, in_f = v.shape\n"
-                "        rows.append([in_f, out_f] + v.detach().cpu()\n"
-                "                     .numpy().flatten().tolist())\n"
+                "        b_key = k.replace('weight', 'bias')\n"
+                "        b = state[b_key].detach().cpu().numpy().tolist()\n"
+                "        rows.append([in_f, out_f] + b + v.detach().cpu().numpy().flatten().tolist())\n"
                 "with open('weights.csv','w',newline='') as f:\n"
                 "    w = csv.writer(f)\n"
                 "    for r in rows: w.writerow(r)";

@@ -8,11 +8,12 @@
 
 // Data structures
 // A single neuron: its world-space position, which layer it belongs to,
-// and its current activation in [0,1].
+// and its current activation.
 struct Neuron
 {
     glm::vec3 position   = glm::vec3(0.0f);
     float     activation = 0.0f;
+    float     bias       = 0.0f;
     int       layerIndex = 0;
 };
 
@@ -30,11 +31,20 @@ struct Synapse
 class NeuralNetwork
 {
 public:
+    enum class ActivationType
+    {
+        Sigmoid,
+        ReLU,
+        Tanh,
+        Linear
+    };
+
     // Description of one layer, supplied to build().
     struct LayerDesc
     {
-        int         neuronCount = 1;
-        std::string label;
+        int            neuronCount = 1;
+        ActivationType activation  = ActivationType::Sigmoid;
+        std::string    label;
     };
 
     // Lifecycle
