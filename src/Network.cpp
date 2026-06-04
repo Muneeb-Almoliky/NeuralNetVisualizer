@@ -170,33 +170,56 @@ void NeuralNetwork::setInputs(const float* values, int count)
 // Deterministic weighted-sum + sigmoid propagation from layer 0 onward.
 // Inputs must already be set via setInputs() or by directly writing
 // m_neurons[layerStart(0)..].activation before this call.
+void NeuralNetwork::forwardPassLayer(int li)
+{
+    const int numLayers = getLayerCount();
+    if (li < 1 || li >= numLayers) return;
+
+    const uint32_t dstBase  = m_layerStart[li];
+    const int      dstCount = m_layers[li].neuronCount;
+
+    // Zero accumulators
+    for (int di = 0; di < dstCount; ++di)
+        m_dstBuf[dstBase + static_cast<uint32_t>(di)] = 0.0f;
+
+    // Accumulate weighted inputs from the previous layer
+    for (const Synapse& s : m_synapses)
+    {
+        const uint32_t dstEnd = dstBase + static_cast<uint32_t>(dstCount);
+        if (s.dst >= dstBase && s.dst < dstEnd)
+            m_dstBuf[s.dst] += m_neurons[s.src].activation * s.weight;
+    }
+
+    // Apply activation function with bias
+    const auto actType = m_layers[li].activation;
+    for (int di = 0; di < dstCount; ++di)
+    {
+        const uint32_t idx = dstBase + static_cast<uint32_t>(di);
+        m_neurons[idx].activation = applyActivation(m_dstBuf[idx] + m_neurons[idx].bias, actType);
+    }
+}
+
 void NeuralNetwork::forwardPass()
 {
     const int numLayers = getLayerCount();
     for (int li = 1; li < numLayers; ++li)
     {
-        const uint32_t dstBase  = m_layerStart[li];
-        const int      dstCount = m_layers[li].neuronCount;
+        forwardPassLayer(li);
+    }
+}
 
-        // Zero accumulators
-        for (int di = 0; di < dstCount; ++di)
-            m_dstBuf[dstBase + static_cast<uint32_t>(di)] = 0.0f;
+void NeuralNetwork::clearActivations(int startLayer)
+{
+    const int numLayers = getLayerCount();
+    if (startLayer < 0 || startLayer >= numLayers) return;
 
-        // Accumulate weighted inputs from the previous layer
-        for (const Synapse& s : m_synapses)
-        {
-            const uint32_t dstEnd = dstBase + static_cast<uint32_t>(dstCount);
-            if (s.dst >= dstBase && s.dst < dstEnd)
-                m_dstBuf[s.dst] += m_neurons[s.src].activation * s.weight;
-        }
+    const uint32_t base = m_layerStart[startLayer];
+    const uint32_t count = static_cast<uint32_t>(m_neurons.size()) - base;
 
-        // Apply activation function with bias
-        const auto actType = m_layers[li].activation;
-        for (int di = 0; di < dstCount; ++di)
-        {
-            const uint32_t idx = dstBase + static_cast<uint32_t>(di);
-            m_neurons[idx].activation = applyActivation(m_dstBuf[idx] + m_neurons[idx].bias, actType);
-        }
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        m_neurons[base + i].activation = 0.0f;
+        m_dstBuf[base + i] = 0.0f;
     }
 }
 

@@ -158,7 +158,27 @@ void Application::update(float dt)
     {
         m_network.setInputs(cfg.inputValues.data(),
                             static_cast<int>(cfg.inputValues.size()));
-        m_network.forwardPass();
+                            
+        auto& prop = m_renderer.prop;
+        if (prop.active)
+        {
+            prop.timer += dt;
+            if (prop.timer >= prop.delay)
+            {
+                prop.timer -= prop.delay;
+                m_network.forwardPassLayer(prop.layerIndex);
+                prop.layerIndex++;
+                if (prop.layerIndex >= m_network.getLayerCount())
+                {
+                    prop.active = false;
+                    m_network.forwardPass(); // final sync for safety
+                }
+            }
+        }
+        else
+        {
+            m_network.forwardPass();
+        }
     }
     else
     {

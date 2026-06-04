@@ -11,6 +11,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <GLFW/glfw3.h>
 
 // Simple text badges used in the Load Weights feedback row
 #define ICON_OK  "[OK]"
@@ -48,6 +49,9 @@ uniform vec3  uCamPos;
 uniform vec3  uBaseColor;
 uniform float uActivation;
 uniform float uGlowStrength;
+uniform float uTime;
+uniform int   uLayerIdx;
+uniform int   uHighlightLayer;
 
 out vec4 FragColor;
 
@@ -75,6 +79,10 @@ void main()
     float clampedAct = min(uActivation, 2.5);
     float glow       = clampedAct * clampedAct;
     vec3  emissive   = vec3(0.25, 0.55, 1.00) * glow * uGlowStrength;
+
+    if (uLayerIdx == uHighlightLayer) {
+        emissive *= 1.5 + 0.5 * sin(uTime * 6.0);
+    }
 
     FragColor = vec4(ambient + diffuse + specular + emissive, 1.0);
 }
@@ -226,6 +234,9 @@ bool Renderer::init()
     m_nUni.baseColor    = glGetUniformLocation(m_neuronShader.id, "uBaseColor");
     m_nUni.activation   = glGetUniformLocation(m_neuronShader.id, "uActivation");
     m_nUni.glowStrength = glGetUniformLocation(m_neuronShader.id, "uGlowStrength");
+    m_nUni.time         = glGetUniformLocation(m_neuronShader.id, "uTime");
+    m_nUni.layerIdx     = glGetUniformLocation(m_neuronShader.id, "uLayerIdx");
+    m_nUni.highlightLayer = glGetUniformLocation(m_neuronShader.id, "uHighlightLayer");
 
     // Compile & link line shader
     {
@@ -335,6 +346,8 @@ void Renderer::drawNeurons(const NeuralNetwork& net,
     glUniformMatrix4fv(m_nUni.viewProj,     1, GL_FALSE, glm::value_ptr(viewProj));
     glUniform3fv      (m_nUni.camPos,       1, glm::value_ptr(camPos));
     glUniform1f       (m_nUni.glowStrength, params.glowStrength);
+    glUniform1f       (m_nUni.time,         static_cast<float>(glfwGetTime()));
+    glUniform1i       (m_nUni.highlightLayer, prop.active ? prop.layerIndex : -1);
 
     glBindVertexArray(m_sphereVAO.id);
 
@@ -354,6 +367,7 @@ void Renderer::drawNeurons(const NeuralNetwork& net,
         glUniformMatrix3fv(m_nUni.normalMat,  1, GL_FALSE, glm::value_ptr(normalMat));
         glUniform3fv      (m_nUni.baseColor,  1, glm::value_ptr(base));
         glUniform1f       (m_nUni.activation, n.activation);
+        glUniform1i       (m_nUni.layerIdx,   n.layerIndex);
 
         glDrawElements(GL_TRIANGLES, m_sphereIndexCount, GL_UNSIGNED_INT, nullptr);
     }
@@ -451,7 +465,7 @@ void Renderer::pushHistory(const NeuralNetwork& net)
 }
 
 // drawImGui
-void Renderer::drawImGui(const NeuralNetwork& net, const Camera& cam)
+void Renderer::drawImGui(NeuralNetwork& net, const Camera& cam)
 {
     ImGui::SetNextWindowPos (ImVec2(20.0f, 20.0f), ImGuiCond_Always);
     // Fixed size to ensure it fits in the 720p window and spawns a scrollbar
@@ -610,7 +624,49 @@ void Renderer::drawImGui(const NeuralNetwork& net, const Camera& cam)
 
         if (netConfig.inferenceMode)
         {
+            const int layerCount = net.getLayerCount();
+            
+            // Propagation Controls
+            if (layerCount <= 2)
+            {
+                ImGui::BeginDisabled();
+                ImGui::Button("Propagate Step-by-Step", ImVec2(-1.0f, 0.0f));
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                    ImGui::SetTooltip("Animation requires at least one hidden layer.");
+                ImGui::EndDisabled();
+            }
+            else if (!prop.active)
+            {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.45f, 0.85f, 0.90f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.55f, 0.95f, 0.95f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.35f, 0.65f, 1.00f, 1.00f));
+                if (ImGui::Button("Propagate Step-by-Step", ImVec2(-1.0f, 0.0f)))
+                {
+                    prop.active = true;
+                    prop.layerIndex = 1;
+                    prop.timer = 0.0f;
+                    net.clearActivations(1);
+                }
+                ImGui::PopStyleColor(3);
+            }
+            else
+            {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.85f, 0.25f, 0.25f, 0.90f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.95f, 0.35f, 0.35f, 0.95f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1.00f, 0.45f, 0.45f, 1.00f));
+                if (ImGui::Button("Stop Animation", ImVec2(-1.0f, 0.0f)))
+                {
+                    prop.active = false;
+                    net.forwardPass(); // Fast forward to completion
+                }
+                ImGui::PopStyleColor(3);
+            }
+
+            ImGui::SliderFloat("Prop. Speed", &prop.delay, 0.05f, 1.5f, "%.2fs per layer");
+            ImGui::Spacing();
+
             // Input sliders
+            ImGui::BeginDisabled(prop.active);
             const int inputCount = netConfig.layerSizes[0];
             if (static_cast<int>(netConfig.inputValues.size()) != inputCount)
                 netConfig.inputValues.resize(inputCount, 0.0f);
@@ -627,11 +683,11 @@ void Renderer::drawImGui(const NeuralNetwork& net, const Camera& cam)
                 ImGui::PopStyleColor();
             }
 
+            ImGui::EndDisabled(); // End prop.active disabled state
             ImGui::Spacing();
 
             // Output readout
             const auto& neurons    = net.getNeurons();
-            const int   layerCount = net.getLayerCount();
             if (layerCount > 0)
             {
                 const int      outLayer = layerCount - 1;

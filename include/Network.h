@@ -72,6 +72,12 @@ public:
     // Call after setInputs() to propagate through all hidden and output layers.
     void forwardPass();
 
+    // Run forward pass for a single specific layer (layerIndex > 0).
+    void forwardPassLayer(int layerIndex);
+
+    // Set activations and internal buffers of layers >= startLayer to 0.0.
+    void clearActivations(int startLayer = 1);
+
     // Weight I/O
 
     // Load synaptic weights and architecture from a CSV file.

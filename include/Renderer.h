@@ -113,6 +113,15 @@ public:
         bool weightsLoaded    = false; // locks architecture sliders
     } netConfig;
 
+    // Animation state (written by UI, executed by Application)
+    struct PropagationState
+    {
+        bool  active      = false;
+        int   layerIndex  = 1;
+        float timer       = 0.0f;
+        float delay       = 0.35f;
+    } prop;
+
     // Must be called once, after a valid OpenGL 3.3 context is current.
     bool init();
 
@@ -121,7 +130,7 @@ public:
 
     // Render the ImGui side panel (controls + live stats).
     // Accepts Camera so it can display the live eye-position readout.
-    void drawImGui(const NeuralNetwork& net, const Camera& cam);
+    void drawImGui(NeuralNetwork& net, const Camera& cam);
 
 private:
     // Shader programs
@@ -133,7 +142,8 @@ private:
     {
         GLint model, viewProj, normalMat;
         GLint camPos, baseColor, activation, glowStrength;
-    } m_nUni{};
+        GLint time, layerIdx, highlightLayer;
+    } m_nUni;
 
     struct LineUni
     {
