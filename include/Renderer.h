@@ -122,6 +122,16 @@ public:
         float delay       = 0.35f;
     } prop;
 
+    // Training state (written by UI, executed by Application)
+    struct TrainingState
+    {
+        bool  active          = false;
+        float learningRate    = 0.1f;
+        int   epochsPerFrame  = 10;
+        int   currentEpoch    = 0;
+        float currentLoss     = 0.0f;
+        bool  randomizePending= false;
+    } train;
     // Must be called once, after a valid OpenGL 3.3 context is current.
     bool init();
 

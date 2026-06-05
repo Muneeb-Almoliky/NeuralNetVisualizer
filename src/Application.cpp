@@ -153,8 +153,52 @@ void Application::update(float dt)
         }
     }
 
-    // Forward pass
-    if (cfg.inferenceMode)
+    // Update Logic
+    auto& train = m_renderer.train;
+
+    if (train.randomizePending)
+    {
+        m_network.randomizeWeights();
+        train.randomizePending = false;
+        train.currentEpoch = 0;
+        train.currentLoss = 0.0f;
+    }
+
+    if (train.active)
+    {
+        static const float xorInputs[4][2] = {
+            {0.0f, 0.0f}, {0.0f, 1.0f}, {1.0f, 0.0f}, {1.0f, 1.0f}
+        };
+        static const float xorTargets[4][1] = {
+            {0.0f}, {1.0f}, {1.0f}, {0.0f}
+        };
+
+        if (m_network.getLayerCount() >= 3 && 
+            m_network.getLayers().front().neuronCount == 2 && 
+            m_network.getLayers().back().neuronCount == 1)
+        {
+            float batchLoss = 0.0f;
+            for (int e = 0; e < train.epochsPerFrame; ++e)
+            {
+                batchLoss = 0.0f;
+                for (int i = 0; i < 4; ++i)
+                {
+                    m_network.setInputs(xorInputs[i], 2);
+                    m_network.forwardPass();
+                    batchLoss += m_network.backwardPass(xorTargets[i], 1);
+                }
+                m_network.applyGradients(train.learningRate);
+                train.currentEpoch++;
+            }
+            train.currentLoss = batchLoss / 4.0f;
+        }
+        else
+        {
+            // Invalid architecture for XOR
+            train.active = false;
+        }
+    }
+    else if (cfg.inferenceMode)
     {
         m_network.setInputs(cfg.inputValues.data(),
                             static_cast<int>(cfg.inputValues.size()));

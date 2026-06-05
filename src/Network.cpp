@@ -99,6 +99,11 @@ void NeuralNetwork::build(const std::vector<LayerDesc>& layers,
 
     // Pre-size the scratch buffer used during tick()
     m_dstBuf.resize(m_neurons.size(), 0.0f);
+
+    // Pre-size training buffers
+    m_deltas.assign(m_neurons.size(), 0.0f);
+    m_biasGradients.assign(m_neurons.size(), 0.0f);
+    m_weightGradients.assign(m_synapses.size(), 0.0f);
 }
 
 // tick()
@@ -325,4 +330,117 @@ std::vector<NeuralNetwork::LayerDesc> NeuralNetwork::loadWeights(const char* pat
     }
 
     return newLayers;
+}
+
+// Training Math
+float NeuralNetwork::applyActivationDerivative(float y, ActivationType type)
+{
+    switch (type)
+    {
+    case ActivationType::Sigmoid: return y * (1.0f - y);
+    case ActivationType::ReLU:    return (y > 0.0f) ? 1.0f : 0.0f;
+    case ActivationType::Tanh:    return 1.0f - y * y;
+    case ActivationType::Linear:  return 1.0f;
+    default:                      return 1.0f;
+    }
+}
+
+void NeuralNetwork::randomizeWeights()
+{
+    std::random_device rd;
+    std::mt19937 rng(rd());
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+    std::uniform_real_distribution<float> biasDist(-0.1f, 0.1f);
+    
+    for (auto& s : m_synapses)
+        s.weight = dist(rng);
+        
+    for (int li = 1; li < getLayerCount(); ++li)
+    {
+        uint32_t base = layerStart(li);
+        for (int i = 0; i < m_layers[li].neuronCount; ++i)
+            m_neurons[base + i].bias = biasDist(rng);
+    }
+}
+
+float NeuralNetwork::backwardPass(const float* targets, int targetCount)
+{
+    int numLayers = getLayerCount();
+    if (numLayers < 2) return 0.0f;
+
+    std::fill(m_deltas.begin(), m_deltas.end(), 0.0f);
+
+    float loss = 0.0f;
+
+    // 1. Output Layer Deltas (MSE derivative)
+    int outLayer = numLayers - 1;
+    uint32_t outBase = m_layerStart[outLayer];
+    int outCount = m_layers[outLayer].neuronCount;
+    auto outActType = m_layers[outLayer].activation;
+
+    for (int i = 0; i < outCount; ++i)
+    {
+        uint32_t idx = outBase + i;
+        float y = m_neurons[idx].activation;
+        float target = (i < targetCount) ? targets[i] : 0.0f;
+        float err = y - target;
+        loss += err * err;
+        m_deltas[idx] = err * applyActivationDerivative(y, outActType);
+    }
+    loss /= static_cast<float>(outCount);
+
+    // 2. Backpropagate deltas through synapses
+    for (int si = static_cast<int>(m_synapses.size()) - 1; si >= 0; --si)
+    {
+        const Synapse& s = m_synapses[si];
+        m_deltas[s.src] += s.weight * m_deltas[s.dst];
+    }
+
+    // 3. Apply derivatives to hidden deltas
+    for (int li = outLayer - 1; li >= 1; --li)
+    {
+        uint32_t base = m_layerStart[li];
+        int count = m_layers[li].neuronCount;
+        auto actType = m_layers[li].activation;
+        for (int i = 0; i < count; ++i)
+        {
+            uint32_t idx = base + i;
+            float y = m_neurons[idx].activation;
+            m_deltas[idx] *= applyActivationDerivative(y, actType);
+        }
+    }
+
+    // 4. Accumulate gradients
+    for (size_t si = 0; si < m_synapses.size(); ++si)
+    {
+        const Synapse& s = m_synapses[si];
+        m_weightGradients[si] += m_neurons[s.src].activation * m_deltas[s.dst];
+    }
+    
+    for (int li = 1; li < numLayers; ++li)
+    {
+        uint32_t base = m_layerStart[li];
+        int count = m_layers[li].neuronCount;
+        for (int i = 0; i < count; ++i)
+        {
+            uint32_t idx = base + i;
+            m_biasGradients[idx] += m_deltas[idx];
+        }
+    }
+
+    return loss;
+}
+
+void NeuralNetwork::applyGradients(float learningRate)
+{
+    for (size_t si = 0; si < m_synapses.size(); ++si)
+    {
+        m_synapses[si].weight -= learningRate * m_weightGradients[si];
+        m_weightGradients[si] = 0.0f;
+    }
+    for (size_t ni = 0; ni < m_neurons.size(); ++ni)
+    {
+        m_neurons[ni].bias -= learningRate * m_biasGradients[ni];
+        m_biasGradients[ni] = 0.0f;
+    }
 }

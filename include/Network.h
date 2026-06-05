@@ -78,6 +78,17 @@ public:
     // Set activations and internal buffers of layers >= startLayer to 0.0.
     void clearActivations(int startLayer = 1);
 
+    // Training
+    
+    // Randomize weights and biases uniformly in [-1, 1] to break symmetry.
+    void randomizeWeights();
+
+    // Backpropagate error for a single sample. Returns the MSE loss.
+    float backwardPass(const float* targets, int targetCount);
+
+    // Apply accumulated gradients using Stochastic Gradient Descent.
+    void applyGradients(float learningRate);
+
     // Weight I/O
 
     // Load synaptic weights and architecture from a CSV file.
@@ -108,5 +119,11 @@ private:
     std::vector<float>     m_dstBuf;      // scratch accumulator for forward pass
     float                  m_time = 0.0f;
 
+    // Training scratch buffers
+    std::vector<float>     m_deltas;
+    std::vector<float>     m_biasGradients;
+    std::vector<float>     m_weightGradients;
+
     static float sigmoid(float x);
+    static float applyActivationDerivative(float y, ActivationType type);
 };

@@ -64,12 +64,18 @@ void main()
     vec3 V = normalize(uCamPos   - vFragPos);
     vec3 H = normalize(L + V);
 
+    // Blend base layer color with activation value (Blue -> Red)
+    vec3 lowColor  = vec3(0.15, 0.15, 0.90);
+    vec3 highColor = vec3(0.90, 0.15, 0.15);
+    vec3 activationColor = mix(lowColor, highColor, clamp(uActivation, 0.0, 1.0));
+    vec3 baseColor = mix(uBaseColor, activationColor, 0.7);
+
     // Ambient
-    vec3 ambient = uBaseColor * 0.22;
+    vec3 ambient = baseColor * 0.22;
 
     // Lambertian diffuse
     float diff   = max(dot(N, L), 0.0);
-    vec3  diffuse = uBaseColor * diff * 0.58;
+    vec3  diffuse = baseColor * diff * 0.58;
 
     // Blinn-Phong specular
     float spec    = pow(max(dot(N, H), 0.0), 80.0);
@@ -603,26 +609,65 @@ void Renderer::drawImGui(NeuralNetwork& net, const Camera& cam)
                                 ImGuiTreeNodeFlags_DefaultOpen))
     {
         // Mode toggle
-        if (!netConfig.inferenceMode)
-        {
-            ImGui::TextColored(ImVec4(0.45f, 0.75f, 0.45f, 1.0f),
-                               "* Animation mode");
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Switch to Inference"))
-                netConfig.inferenceMode = true;
+        int currentMode = train.active ? 2 : (netConfig.inferenceMode ? 1 : 0);
+        ImGui::TextDisabled("Operating Mode:");
+        if (ImGui::RadioButton("Animation##Mode", currentMode == 0)) {
+            train.active = false;
+            netConfig.inferenceMode = false;
         }
-        else
-        {
-            ImGui::TextColored(ImVec4(0.90f, 0.65f, 0.20f, 1.0f),
-                               "* Inference mode");
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Switch to Animation"))
-                netConfig.inferenceMode = false;
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Inference##Mode", currentMode == 1)) {
+            train.active = false;
+            netConfig.inferenceMode = true;
+        }
+        ImGui::SameLine();
+
+        // Disable training if the live network arch doesn't match XOR (2-in, 1-out, ≥1 hidden)
+        const bool canTrain = (net.getLayerCount() >= 3 &&
+                               net.getLayers().front().neuronCount == 2 &&
+                               net.getLayers().back().neuronCount  == 1);
+
+        ImGui::BeginDisabled(!canTrain);
+        if (ImGui::RadioButton("Training##Mode", currentMode == 2)) {
+            train.active = true;
+            netConfig.inferenceMode = false;
+            train.randomizePending = true;
+        }
+        ImGui::EndDisabled();
+
+        if (!canTrain && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            ImGui::SetTooltip("XOR Training requires exactly 2 inputs, 1 output,\n"
+                              "and at least 1 hidden layer.\n"
+                              "Adjust the architecture in the Network panel first.");
         }
 
         ImGui::Spacing();
 
-        if (netConfig.inferenceMode)
+        if (train.active)
+        {
+            ImGui::TextColored(ImVec4(0.90f, 0.38f, 0.12f, 1.0f), "Training Mode (XOR Dataset)");
+            ImGui::Spacing();
+
+            ImGui::SliderFloat("Learn Rate", &train.learningRate, 0.01f, 1.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
+            ImGui::SliderInt("Epochs/Frame", &train.epochsPerFrame, 1, 100);
+            
+            if (ImGui::Button("Randomize Weights", ImVec2(-1.0f, 0.0f)))
+                train.randomizePending = true;
+
+            ImGui::Spacing();
+            ImGui::Text("Epoch: %d", train.currentEpoch);
+            ImGui::Text("Loss:  %.6f", train.currentLoss);
+
+            static float lossHist[100] = {0};
+            static int lossIdx = 0;
+            lossHist[lossIdx] = train.currentLoss;
+            lossIdx = (lossIdx + 1) % 100;
+
+            ImGui::PlotLines("##Loss", lossHist, 100, lossIdx, "MSE Loss", 0.0f, 0.3f, ImVec2(-1.0f, 60.0f));
+            ImGui::Spacing();
+            ImGui::Separator();
+        }
+        else if (netConfig.inferenceMode)
         {
             const int layerCount = net.getLayerCount();
             
