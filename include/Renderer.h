@@ -157,7 +157,7 @@ private:
 
     struct LineUni
     {
-        GLint viewProj, alpha;
+        GLint viewProj, alpha, viewport;
     } m_lUni{};
 
     // Sphere geometry (static — uploaded once)
@@ -169,10 +169,12 @@ private:
     // Activation history (one LayerHistory per layer)
     std::vector<LayerHistory> m_history;
 
-    // Synapse line geometry (dynamic — rebuilt each frame)
-    GlVAO              m_lineVAO;
-    GlBuffer           m_lineVBO;
-    std::vector<float> m_lineVerts; // [x,y,z,r,g,b] × 2 per synapse
+    // Synapse quad geometry (dynamic — rebuilt each frame)
+    GlVAO                m_lineVAO;
+    GlBuffer             m_lineVBO;
+    GlBuffer             m_lineEBO;
+    std::vector<float>   m_lineVerts;   // 11 floats × 4 verts per synapse
+    std::vector<GLuint>  m_lineIdxBuf;  // 6 indices per synapse
 
     // Internal draw passes
     void drawNeurons (const NeuralNetwork& net,
