@@ -1,9 +1,9 @@
 #pragma once
 
-// 3D draw pipeline for the Neural Network Visualizer.
-// Owns all OpenGL objects (shaders, VAOs, VBOs) via RAII wrappers and
-// exposes two public entry points: draw() for the 3D scene and
-// drawImGui() for the side-panel dashboard.
+// Pure 3D draw pipeline for the Neural Network Visualizer.
+// Owns all OpenGL objects (shaders, VAOs, VBOs) via RAII wrappers.
+// UI rendering is handled separately by the UI class.
+// Application state (Params, NetworkConfig, etc.) lives in AppState.h.
 
 #include <glad/glad.h>
 #include <glm/glm.hpp>
@@ -11,14 +11,13 @@
 #include <cstdint>
 #include <vector>
 #include "Network.h"
+#include "AppState.h"
 
-// Forward declarations — avoids pulling heavy headers into every TU
-// that includes Renderer.h.
+// Forward declarations
 class Camera;
+
 // Lightweight RAII wrappers for raw OpenGL handles.
 // Constructors do NOT call GL — call create() explicitly after GLAD is ready.
-// This prevents accidental GL calls before the context exists when these
-// structs are used as class members.
 struct GlProgram
 {
     GLuint id = 0;
@@ -49,8 +48,8 @@ struct GlBuffer
     GlBuffer& operator=(const GlBuffer&) = delete;
 };
 
-// Renderer
-// Circular buffer that records one float value per frame for up to kHistLen frames.
+// LayerHistory
+// Circular buffer recording mean layer activation per frame for history plots.
 struct LayerHistory
 {
     static constexpr int kHistLen = 128;
@@ -74,73 +73,32 @@ struct LayerHistory
     }
 };
 
+// Renderer
+// Single responsibility: draw the 3D scene.
+// Receives Params and highlightLayer from Application each frame.
 class Renderer
 {
 public:
-    // Runtime-tunable parameters (written to by ImGui sliders)
-    struct Params
-    {
-        float neuronRadius = 0.28f;  // sphere scale
-        float glowStrength = 2.50f;  // emissive multiplier for high-activation nodes
-        float animSpeed    = 1.00f;  // dt multiplier fed to NeuralNetwork::tick()
-        float synapseAlpha = 0.35f;  // transparency of synapse lines
-        bool  showNeurons  = true;
-        bool  showSynapses = true;
-    } params;
-
-    // Network configuration (written by ImGui, read by Application)
-    // Application checks rebuildPending each frame and calls rebuildNetwork().
-    struct NetworkConfig
-    {
-        std::vector<int> layerSizes = {4, 8, 6, 3};
-        std::vector<NeuralNetwork::ActivationType> layerActivations = {
-            NeuralNetwork::ActivationType::Linear,
-            NeuralNetwork::ActivationType::Sigmoid,
-            NeuralNetwork::ActivationType::Sigmoid,
-            NeuralNetwork::ActivationType::Sigmoid
-        };
-
-        bool rebuildPending         = false; // Application resets this after handling
-
-        bool  inferenceMode         = false;
-        std::vector<float> inputValues = {0.0f, 0.0f, 0.0f, 0.0f};  // written by input sliders
-
-        // Weight file loader
-        char weightPath[512]  = {};   // text-input buffer
-        bool loadPending      = false; // Application calls loadWeights() then clears
-        bool lastLoadOk       = false;
-        bool lastLoadAttempted= false;
-        bool weightsLoaded    = false; // locks architecture sliders
-    } netConfig;
-
-    // Animation state (written by UI, executed by Application)
-    struct PropagationState
-    {
-        bool  active      = false;
-        int   layerIndex  = 1;
-        float timer       = 0.0f;
-        float delay       = 0.35f;
-    } prop;
-
-    // Training state (written by UI, executed by Application)
-    struct TrainingState
-    {
-        bool  active          = false;
-        float learningRate    = 0.1f;
-        int   epochsPerFrame  = 10;
-        int   currentEpoch    = 0;
-        float currentLoss     = 0.0f;
-        bool  randomizePending= false;
-    } train;
-    // Must be called once, after a valid OpenGL 3.3 context is current.
+    // Must be called once after a valid OpenGL 3.3 context is current.
     bool init();
 
     // Render the full 3D scene (neurons + synapses).
-    void draw   (const NeuralNetwork& net, const Camera& cam, int fbW, int fbH);
+    // params        : rendering configuration (neuron radius, glow, alpha, visibility)
+    // highlightLayer: layer index to pulse-highlight during propagation (-1 = none)
+    void draw(const NeuralNetwork& net,
+              const Camera&        cam,
+              int fbW, int fbH,
+              const Params&        params,
+              int                  highlightLayer);
 
-    // Render the ImGui side panel (controls + live stats).
-    // Accepts Camera so it can display the live eye-position readout.
-    void drawImGui(NeuralNetwork& net, const Camera& cam);
+    // Read-only access to activation history for the UI to plot.
+    [[nodiscard]] const std::vector<LayerHistory>& getLayerHistories() const
+    {
+        return m_history;
+    }
+
+    // Color scheme used by both Renderer (sphere tint) and UI (labels).
+    static glm::vec3 layerColor(int layerIdx, int layerCount);
 
 private:
     // Shader programs
@@ -153,7 +111,7 @@ private:
         GLint model, viewProj, normalMat;
         GLint camPos, baseColor, activation, glowStrength;
         GLint time, layerIdx, highlightLayer;
-    } m_nUni;
+    } m_nUni{};
 
     struct LineUni
     {
@@ -179,16 +137,20 @@ private:
     // Internal draw passes
     void drawNeurons (const NeuralNetwork& net,
                       const glm::mat4& viewProj,
-                      const glm::vec3& camPos);
+                      const glm::vec3& camPos,
+                      const Params&    params,
+                      int              highlightLayer);
+
     void drawSynapses(const NeuralNetwork& net,
-                      const glm::mat4& viewProj);
-    void pushHistory (const NeuralNetwork& net); // updates m_history each frame
+                      const glm::mat4& viewProj,
+                      const Params&    params);
+
+    void pushHistory (const NeuralNetwork& net);
 
     // Static helpers
-    static GLuint     compileShader(GLenum type, const char* src);
-    static GLuint     linkProgram  (GLuint vert, GLuint frag);
-    static void       buildSphere  (int stacks, int slices,
-                                    std::vector<float>&  outVerts,
-                                    std::vector<GLuint>& outIdx);
-    static glm::vec3  layerColor   (int layerIdx, int layerCount);
+    static GLuint compileShader(GLenum type, const char* src);
+    static GLuint linkProgram  (GLuint vert, GLuint frag);
+    static void   buildSphere  (int stacks, int slices,
+                                std::vector<float>&  outVerts,
+                                std::vector<GLuint>& outIdx);
 };

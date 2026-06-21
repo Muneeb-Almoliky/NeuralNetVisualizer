@@ -2,11 +2,14 @@
 
 // Owns the full application lifecycle: GLFW window, OpenGL context,
 // ImGui, the main loop, and all GLFW input callbacks.
-// Composes Camera, NeuralNetwork, and Renderer — each in its own class.
+// Composes Camera, NeuralNetwork, Renderer, and UI — each in its own class.
+// All shared UI/simulation state lives in AppState.
 
 #include "Camera.h"
 #include "Network.h"
 #include "Renderer.h"
+#include "UI.h"
+#include "AppState.h"
 
 // Forward-declare GLFWwindow so consumers of this header don't need GLFW.
 struct GLFWwindow;
@@ -29,11 +32,13 @@ public:
 
 private:
     // Subsystems
-    GLFWwindow*   m_window  = nullptr;
+    GLFWwindow*   m_window   = nullptr;
     Camera        m_camera;       // orbital camera
     NeuralNetwork m_network;      // MLP data model + animation
-    Renderer      m_renderer;     // OpenGL draw pipeline + ImGui panel
-    bool          m_ready   = false;
+    Renderer      m_renderer;     // OpenGL 3D draw pipeline
+    UI            m_ui;           // ImGui side-panel
+    AppState      m_state;        // all UI-editable shared state
+    bool          m_ready    = false;
 
     // Init phases (each returns false on failure)
     bool initGLFW  (int w, int h, const char* title);
@@ -44,11 +49,9 @@ private:
     // Per-frame
     void update(float dt);
     void render();
-    void rebuildNetwork();   // re-creates the NeuralNetwork from netConfig
+    void rebuildNetwork();   // re-creates the NeuralNetwork from m_state.netConfig
 
     // GLFW static callback trampolines
-    // Each retrieves the Application* stored via glfwSetWindowUserPointer and
-    // delegates to the appropriate member, after guarding against ImGui capture.
     static void cbError      (int code, const char* msg);
     static void cbMouseButton(GLFWwindow*, int button, int action, int mods);
     static void cbCursorPos  (GLFWwindow*, double x, double y);

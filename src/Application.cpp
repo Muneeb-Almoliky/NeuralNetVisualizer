@@ -87,13 +87,15 @@ int Application::run()
 // update — advance simulation, handle UI commands
 void Application::update(float dt)
 {
-    auto& cfg = m_renderer.netConfig;
+    auto& cfg   = m_state.netConfig;
+    auto& train = m_state.train;
+    auto& prop  = m_state.prop;
 
     // Architecture rebuild
     if (cfg.rebuildPending)
     {
         cfg.rebuildPending = false;
-        cfg.weightsLoaded  = false; // manual rebuild clears custom weights
+        cfg.weightsLoaded  = false;
         rebuildNetwork();
     }
 
@@ -102,42 +104,23 @@ void Application::update(float dt)
     {
         cfg.loadPending = false;
 
-        // If the path field is empty the user clicked Browse — open the picker
         const bool pathIsEmpty = (cfg.weightPath[0] == '\0');
-        if (pathIsEmpty)
+        const std::string pathToLoad = pathIsEmpty ? openFileDialog()
+                                                   : std::string(cfg.weightPath);
+
+        if (!pathToLoad.empty())
         {
-            const std::string chosen = openFileDialog();
-            if (!chosen.empty())
+            if (pathIsEmpty)
             {
-                std::strncpy(cfg.weightPath, chosen.c_str(),
+                std::strncpy(cfg.weightPath, pathToLoad.c_str(),
                              sizeof(cfg.weightPath) - 1);
                 cfg.weightPath[sizeof(cfg.weightPath) - 1] = '\0';
-                
-                auto loadedArch = m_network.loadWeights(cfg.weightPath);
-                cfg.lastLoadOk        = !loadedArch.empty();
-                cfg.lastLoadAttempted = true;
-                
-                if (cfg.lastLoadOk)
-                {
-                    cfg.weightsLoaded = true;
-                    cfg.layerSizes.clear();
-                    cfg.layerActivations.clear();
-                    for (const auto& desc : loadedArch)
-                    {
-                        cfg.layerSizes.push_back(desc.neuronCount);
-                        cfg.layerActivations.push_back(desc.activation);
-                    }
-                    cfg.inputValues.resize(cfg.layerSizes.front(), 0.0f);
-                }
             }
-        }
-        else
-        {
-            // The path was typed manually or we're reloading an existing path
-            auto loadedArch = m_network.loadWeights(cfg.weightPath);
+
+            auto loadedArch = m_network.loadWeights(pathToLoad.c_str());
             cfg.lastLoadOk        = !loadedArch.empty();
             cfg.lastLoadAttempted = true;
-            
+
             if (cfg.lastLoadOk)
             {
                 cfg.weightsLoaded = true;
@@ -153,15 +136,13 @@ void Application::update(float dt)
         }
     }
 
-    // Update Logic
-    auto& train = m_renderer.train;
-
+    // Training
     if (train.randomizePending)
     {
         m_network.randomizeWeights();
         train.randomizePending = false;
-        train.currentEpoch = 0;
-        train.currentLoss = 0.0f;
+        train.currentEpoch     = 0;
+        train.currentLoss      = 0.0f;
     }
 
     if (train.active)
@@ -173,9 +154,9 @@ void Application::update(float dt)
             {0.0f}, {1.0f}, {1.0f}, {0.0f}
         };
 
-        if (m_network.getLayerCount() >= 3 && 
-            m_network.getLayers().front().neuronCount == 2 && 
-            m_network.getLayers().back().neuronCount == 1)
+        if (m_network.getLayerCount() >= 3 &&
+            m_network.getLayers().front().neuronCount == 2 &&
+            m_network.getLayers().back().neuronCount  == 1)
         {
             float batchLoss = 0.0f;
             for (int e = 0; e < train.epochsPerFrame; ++e)
@@ -194,7 +175,6 @@ void Application::update(float dt)
         }
         else
         {
-            // Invalid architecture for XOR
             train.active = false;
         }
     }
@@ -202,8 +182,7 @@ void Application::update(float dt)
     {
         m_network.setInputs(cfg.inputValues.data(),
                             static_cast<int>(cfg.inputValues.size()));
-                            
-        auto& prop = m_renderer.prop;
+
         if (prop.active)
         {
             prop.timer += dt;
@@ -215,7 +194,7 @@ void Application::update(float dt)
                 if (prop.layerIndex >= m_network.getLayerCount())
                 {
                     prop.active = false;
-                    m_network.forwardPass(); // final sync for safety
+                    m_network.forwardPass();
                 }
             }
         }
@@ -226,7 +205,7 @@ void Application::update(float dt)
     }
     else
     {
-        m_network.tick(dt * m_renderer.params.animSpeed);
+        m_network.tick(dt * m_state.params.animSpeed);
     }
 }
 
@@ -240,15 +219,18 @@ void Application::render()
     glClearColor(0.04f, 0.04f, 0.08f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
+    // Compute highlight layer for the renderer (-1 = none)
+    const int highlightLayer = (m_state.prop.active) ? m_state.prop.layerIndex : -1;
+
     // 3D scene
-    m_renderer.draw(m_network, m_camera, fbW, fbH);
+    m_renderer.draw(m_network, m_camera, fbW, fbH, m_state.params, highlightLayer);
 
     // ImGui overlay — strictly follows the required frame lifecycle
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
-    m_renderer.drawImGui(m_network, m_camera);
+    m_ui.draw(m_state, m_renderer, m_network, m_camera);
 
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
@@ -280,7 +262,6 @@ bool Application::initGLFW(int w, int h, const char* title)
     glfwMakeContextCurrent(m_window);
     glfwSwapInterval(1); // vsync
 
-    // Store this so static trampolines can reach back into the instance
     glfwSetWindowUserPointer  (m_window, this);
     glfwSetMouseButtonCallback(m_window, cbMouseButton);
     glfwSetCursorPosCallback  (m_window, cbCursorPos);
@@ -312,7 +293,6 @@ bool Application::initImGui()
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
-    // Deep violet / electric blue dark theme
     ImGui::StyleColorsDark();
     ImGuiStyle& style       = ImGui::GetStyle();
     style.WindowRounding    = 6.0f;
@@ -362,8 +342,8 @@ bool Application::initScene()
     /*layerSpacing=*/  3.0f,
     /*neuronSpacing=*/ 1.2f);
 
-    // Sync the UI config to match what was just built
-    auto& cfg = m_renderer.netConfig;
+    // Sync AppState to match the built network
+    auto& cfg = m_state.netConfig;
     cfg.layerSizes = {4, 8, 6, 3};
     cfg.layerActivations = {
         NeuralNetwork::ActivationType::Linear,
@@ -383,11 +363,10 @@ bool Application::initScene()
 }
 
 // rebuildNetwork
-// Converts the current netConfig into a LayerDesc list and calls build().
-// Invoked by update() whenever cfg.rebuildPending is true.
+// Converts m_state.netConfig into a LayerDesc list and calls build().
 void Application::rebuildNetwork()
 {
-    const auto& cfg = m_renderer.netConfig;
+    const auto& cfg = m_state.netConfig;
 
     std::vector<NeuralNetwork::LayerDesc> layers;
     layers.reserve(cfg.layerSizes.size());
@@ -395,9 +374,9 @@ void Application::rebuildNetwork()
     for (size_t i = 0; i < cfg.layerSizes.size(); ++i)
     {
         std::string label;
-        if      (i == 0)                             label = "Input";
+        if      (i == 0)                         label = "Input";
         else if (i == cfg.layerSizes.size() - 1) label = "Output";
-        else                                         label = "Hidden " + std::to_string(i);
+        else                                      label = "Hidden " + std::to_string(i);
 
         layers.push_back({ cfg.layerSizes[i], cfg.layerActivations[i], std::move(label) });
     }
@@ -414,7 +393,6 @@ void Application::cbError(int code, const char* msg)
 void Application::cbMouseButton(GLFWwindow* win, int button,
                                 int action, int /*mods*/)
 {
-    // Let ImGui consume its own mouse events first
     if (ImGui::GetIO().WantCaptureMouse) return;
 
     auto* app = static_cast<Application*>(glfwGetWindowUserPointer(win));
