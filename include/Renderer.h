@@ -115,7 +115,7 @@ private:
 
     struct LineUni
     {
-        GLint viewProj, alpha, viewport;
+        GLint viewProj, viewport;
     } m_lUni{};
 
     // Sphere geometry (static — uploaded once)

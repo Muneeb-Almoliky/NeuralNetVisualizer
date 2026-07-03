@@ -91,38 +91,40 @@ void main()
 )glsl";
 
 // Embedded GLSL — Synapse (screen-space quad) shaders
+// Each synapse is a screen-aligned rectangle of fixed pixel width.
+// Alpha (per-vertex) encodes |weight| / maxWeight — strong connections
+// are opaque, weak ones fade out. Color encodes weight sign (blue/red).
 static const char* kLineVert = R"glsl(
 #version 330 core
-layout(location = 0) in vec3  aPos;       // this endpoint world position
-layout(location = 1) in vec3  aColor;
-layout(location = 2) in vec3  aOtherPos;  // opposite endpoint world position
-layout(location = 3) in float aSide;      // -1.0 or +1.0 (which edge of quad)
-layout(location = 4) in float aThickness; // pixel half-width
+layout(location = 0) in vec3 aPos;       // this endpoint world position
+layout(location = 1) in vec4 aColor;     // rgba: hue + weight-opacity
+layout(location = 2) in vec3 aOtherPos;  // opposite endpoint world position
+layout(location = 3) in float aSide;     // -1.0 or +1.0 (quad edge)
 
 uniform mat4 uViewProj;
-uniform vec2 uViewport; // (width, height) in pixels
+uniform vec2 uViewport;  // (width, height) in pixels
 
-out vec3 vColor;
+out vec4 vColor;
 
 void main()
 {
     vColor = aColor;
 
+    // Fixed pixel half-width — visible but not thick enough to clutter
+    const float kHalfWidth = 1.5;
+
     // Project both endpoints to clip space
     vec4 clip0 = uViewProj * vec4(aPos,      1.0);
     vec4 clip1 = uViewProj * vec4(aOtherPos, 1.0);
 
-    // NDC direction of the line
-    vec2 ndc0 = clip0.xy / clip0.w;
-    vec2 ndc1 = clip1.xy / clip1.w;
-    vec2 dir  = ndc1 - ndc0;
-
-    // Convert direction to screen pixels, then find perpendicular
-    vec2 dirScreen = normalize(dir * uViewport);
+    // NDC direction, converted to screen pixels to find perpendicular
+    vec2 ndc0      = clip0.xy / clip0.w;
+    vec2 ndc1      = clip1.xy / clip1.w;
+    vec2 dirScreen = normalize((ndc1 - ndc0) * uViewport);
     vec2 perp      = vec2(-dirScreen.y, dirScreen.x);
 
-    // Offset by thickness pixels, converted back to NDC
-    vec2 offset = perp * aSide * aThickness / uViewport * 2.0;
+    // Push vertex left/right by kHalfWidth pixels (back to NDC)
+    vec2 offset = perp * aSide * kHalfWidth / uViewport * 2.0;
 
     gl_Position = vec4(clip0.xy + offset * clip0.w, clip0.z, clip0.w);
 }
@@ -131,13 +133,12 @@ void main()
 static const char* kLineFrag = R"glsl(
 #version 330 core
 
-in  vec3  vColor;
-uniform float uAlpha;
-out vec4  FragColor;
+in  vec4 vColor;
+out vec4 FragColor;
 
 void main()
 {
-    FragColor = vec4(vColor, uAlpha);
+    FragColor = vColor;  // alpha already encoded per-vertex
 }
 )glsl";
 
@@ -272,7 +273,6 @@ bool Renderer::init()
     }
 
     m_lUni.viewProj  = glGetUniformLocation(m_lineShader.id, "uViewProj");
-    m_lUni.alpha     = glGetUniformLocation(m_lineShader.id, "uAlpha");
     m_lUni.viewport  = glGetUniformLocation(m_lineShader.id, "uViewport");
 
     // Build sphere geometry and upload once
@@ -313,7 +313,8 @@ bool Renderer::init()
     }
 
     // Prepare synapse quad VAO (data streamed each frame)
-    // Per-vertex layout: [pos(3), color(3), otherPos(3), side(1), thickness(1)] = 11 floats
+    // Per-vertex layout: [pos(3), rgba(4), otherPos(3), side(1)] = 11 floats
+    // 4 vertices + 6 indices per synapse (2 triangles forming a rectangle).
     {
         m_lineVAO.create();
         m_lineVBO.create();
@@ -330,17 +331,14 @@ bool Renderer::init()
         glEnableVertexAttribArray(0); // aPos
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride,
                               reinterpret_cast<void*>(0));
-        glEnableVertexAttribArray(1); // aColor
-        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride,
+        glEnableVertexAttribArray(1); // aColor (rgba)
+        glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, stride,
                               reinterpret_cast<void*>(3 * sizeof(float)));
         glEnableVertexAttribArray(2); // aOtherPos
         glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, stride,
-                              reinterpret_cast<void*>(6 * sizeof(float)));
+                              reinterpret_cast<void*>(7 * sizeof(float)));
         glEnableVertexAttribArray(3); // aSide
         glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, stride,
-                              reinterpret_cast<void*>(9 * sizeof(float)));
-        glEnableVertexAttribArray(4); // aThickness
-        glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, stride,
                               reinterpret_cast<void*>(10 * sizeof(float)));
 
         // State restore
@@ -420,8 +418,10 @@ void Renderer::drawNeurons(const NeuralNetwork& net,
 }
 
 // drawSynapses
-// Renders each synapse as a screen-space quad whose pixel half-width is
-// proportional to |weight|, clamped to [kMinPx, kMaxPx].
+// Renders each synapse as a screen-space quad (2 triangles) of fixed pixel
+// width. Alpha is per-vertex and encodes |weight| / maxWeight, so the
+// strongest connection is always opaque and weak ones fade out. This gives
+// clearly visible lines that scale correctly for both random and imported weights.
 void Renderer::drawSynapses(const NeuralNetwork& net,
                             const glm::mat4&     viewProj,
                             const Params&        params)
@@ -430,12 +430,14 @@ void Renderer::drawSynapses(const NeuralNetwork& net,
     const auto& synapses = net.getSynapses();
     if (synapses.empty()) return;
 
-    // Thickness range in pixels (half-width)
-    constexpr float kMinPx = 0.5f;
-    constexpr float kMaxPx = 4.0f;
+    // Normalise weights so the strongest synapse is always fully opaque
+    float maxW = 0.0f;
+    for (const Synapse& s : synapses)
+        maxW = std::max(maxW, std::abs(s.weight));
+    if (maxW < 1e-6f) maxW = 1.0f; // guard against zero-weight networks
 
     // Rebuild quad vertex + index buffers
-    // Per-vertex: [pos(3), color(3), otherPos(3), side(1), thickness(1)] = 11 floats
+    // Per-vertex layout: [pos(3), rgba(4), otherPos(3), side(1)] = 11 floats
     // Per-synapse: 4 vertices, 6 indices (2 triangles)
     m_lineVerts.clear();
     m_lineIdxBuf.clear();
@@ -448,41 +450,42 @@ void Renderer::drawSynapses(const NeuralNetwork& net,
         const Neuron&  src = neurons[s.src];
         const Neuron&  dst = neurons[s.dst];
 
-        // Color: blue = positive weight, red = negative weight
-        // Brightness boosted by source activation
+        // Hue: blue = positive weight, red = negative weight
         const float     t      = glm::clamp((s.weight + 1.0f) * 0.5f, 0.0f, 1.0f);
         const glm::vec3 posCol = glm::vec3(0.18f, 0.50f, 0.95f);
         const glm::vec3 negCol = glm::vec3(0.95f, 0.18f, 0.28f);
-        const glm::vec3 col    = glm::mix(negCol, posCol, t)
-                                 * (0.35f + src.activation * 0.65f);
+        const glm::vec3 rgb    = glm::mix(negCol, posCol, t);
 
-        // Thickness: map |weight| → pixel half-width
-        const float thickness = glm::mix(kMinPx, kMaxPx,
-                                         glm::clamp(std::abs(s.weight), 0.0f, 1.0f));
+        // Alpha: |weight| / maxW so scale is always relative to the network.
+        // Multiplied by activation brightness and the global synapseAlpha slider.
+        constexpr float kMinAlpha = 0.05f;
+        const float normW  = std::abs(s.weight) / maxW;
+        const float alpha  = glm::mix(kMinAlpha, 1.0f, normW)
+                             * (0.35f + src.activation * 0.65f)
+                             * params.synapseAlpha;
 
         const auto& sp = src.position;
         const auto& dp = dst.position;
 
-        // 4 vertices per synapse quad:
-        //   v0 (src, side -1), v1 (src, side +1),
-        //   v2 (dst, side -1), v3 (dst, side +1)
-        auto emit = [&](glm::vec3 pos, glm::vec3 other, float side) {
+        // 4 vertices per quad: v0(src,-1), v1(src,+1), v2(dst,+1), v3(dst,-1)
+        // For dst vertices aOtherPos and aSide are swapped so the perpendicular
+        // direction stays consistent across both endpoint pairs.
+        auto emit = [&](glm::vec3 pos, glm::vec3 other, float side)
+        {
             m_lineVerts.insert(m_lineVerts.end(), {
                 pos.x,   pos.y,   pos.z,
-                col.r,   col.g,   col.b,
+                rgb.r,   rgb.g,   rgb.b,   alpha,
                 other.x, other.y, other.z,
-                side,
-                thickness
+                side
             });
         };
 
         const GLuint base = static_cast<GLuint>(si * 4);
         emit(sp, dp, -1.0f); // v0
         emit(sp, dp, +1.0f); // v1
-        emit(dp, sp, +1.0f); // v2  (other/side flipped so perp stays consistent)
+        emit(dp, sp, +1.0f); // v2
         emit(dp, sp, -1.0f); // v3
 
-        // Two triangles: v0-v1-v2, v0-v2-v3
         m_lineIdxBuf.insert(m_lineIdxBuf.end(),
             { base+0, base+1, base+2,
               base+0, base+2, base+3 });
@@ -502,20 +505,20 @@ void Renderer::drawSynapses(const NeuralNetwork& net,
                  m_lineIdxBuf.data(), GL_DYNAMIC_DRAW);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 
-    // Query current framebuffer size for the viewport uniform
+    // Query viewport for the perpendicular-offset calculation
     GLint vp[4];
-    glGetIntegerv(GL_VIEWPORT, vp); // [x, y, w, h]
+    glGetIntegerv(GL_VIEWPORT, vp);
 
     // Draw with alpha blending
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glDepthMask(GL_FALSE);
+    glDepthMask(GL_FALSE); // transparent quads don't write depth
 
     glUseProgram(m_lineShader.id);
     glUniformMatrix4fv(m_lUni.viewProj, 1, GL_FALSE, glm::value_ptr(viewProj));
-    glUniform1f       (m_lUni.alpha,    params.synapseAlpha);
-    glUniform2f       (m_lUni.viewport, static_cast<float>(vp[2]),
-                                        static_cast<float>(vp[3]));
+    glUniform2f       (m_lUni.viewport,
+                       static_cast<float>(vp[2]),
+                       static_cast<float>(vp[3]));
 
     glBindVertexArray(m_lineVAO.id);
     glDrawElements(GL_TRIANGLES,
